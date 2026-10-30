@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Warp Notes
+Comment=Per-repo markdown notes with a live editor
+Exec=$HOME/Developments/warp-notes/packaging/linux/out/warp-notes
+Icon=warpnotes
+Terminal=false
+Categories=Development;
+StartupWMClass=warp-notes
