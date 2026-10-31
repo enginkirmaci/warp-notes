@@ -19,11 +19,19 @@ use std::path::PathBuf;
 /// desktop shortcut never blocks the window.
 fn parse_launch() -> Launch {
     let mut launch = Launch::default();
-    let mut args = std::env::args().skip(1);
+    // args_os: non-UTF-8 argv must degrade to an ignored arg, not panic
+    // before the window opens
+    let mut args = std::env::args_os()
+        .skip(1)
+        .map(|arg| arg.to_string_lossy().into_owned());
     while let Some(arg) = args.next() {
         let mut value = || args.next().filter(|v| !v.starts_with('-'));
         match arg.as_str() {
-            "--store" => launch.store_root = value().map(PathBuf::from),
+            // resolve_store_root trims and falls back to the shared store, so
+            // a stale `--store " "` never becomes a relative directory
+            "--store" => {
+                launch.store_root = value().map(|v| warp_notes::notes_store::resolve_store_root(&v))
+            }
             "--repo" => launch.repo_scope = value(),
             "--note" => launch.open_note = value().map(PathBuf::from),
             _ => {}
@@ -34,6 +42,12 @@ fn parse_launch() -> Launch {
 
 fn main() {
     let _log_guard = logging::initialize();
+    // crashes reach the rolling log (the warp-agent services::install_panic_hook pattern)
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!("panic: {info}");
+        default_hook(info);
+    }));
     // the shared store moves out of ~/.devtools once, on whoever runs first
     paths::migrate_legacy_store();
 

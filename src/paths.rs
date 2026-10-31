@@ -23,16 +23,29 @@ pub fn default_store_root() -> PathBuf {
 }
 
 /// One-shot migration of the legacy DevTools store: `~/.devtools/notes` →
-/// `~/.warp/notes` by rename, only while the target is missing (idempotent —
-/// later runs never touch either side). A failed rename leaves the source
-/// intact; the store is then just created empty.
+/// `~/.warp/notes` by rename. "Landed" means the target holds content; an
+/// empty target is a leftover from a failed attempt (either app creates the
+/// empty store after a failed rename), so it is dropped and the rename
+/// retried — otherwise one early failure would strand the notes in
+/// ~/.devtools forever. A rename that still fails leaves both sides intact.
 pub fn migrate_legacy_store() {
-    let target = default_store_root();
-    if target.is_dir() {
-        return;
-    }
     let legacy = home().join(".devtools").join("notes");
     if !legacy.is_dir() {
+        return;
+    }
+    let target = default_store_root();
+    if target.is_dir()
+        && std::fs::read_dir(&target).is_ok_and(|mut entries| entries.next().is_some())
+    {
+        return;
+    }
+    if target.is_dir()
+        && let Err(err) = std::fs::remove_dir(&target)
+    {
+        tracing::warn!(
+            "could not clear the empty store {}: {err}",
+            target.display()
+        );
         return;
     }
     if let Some(parent) = target.parent()

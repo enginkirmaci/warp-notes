@@ -22,12 +22,21 @@ pub fn write_atomically(path: &Path, contents: &str) -> anyhow::Result<()> {
     std::fs::write(&tmp, contents).with_context(|| format!("write {}", tmp.display()))?;
     if let Err(err) = std::fs::rename(&tmp, path) {
         // a destination held open without FILE_SHARE_DELETE (an editor) —
-        // drop it and retry once; never leave the temp file behind
-        if std::fs::remove_file(path).is_err() || std::fs::rename(&tmp, path).is_err() {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(err)
-                .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()));
+        // drop it and retry once; if the retry also fails, keep the temp
+        // file: with the old file delete-pending it is the only surviving
+        // copy of the new contents, so the error names it instead of
+        // deleting it
+        if std::fs::remove_file(path).is_ok() && std::fs::rename(&tmp, path).is_ok() {
+            return Ok(());
         }
+        return Err(err).with_context(|| {
+            format!(
+                "rename {} -> {} (new contents kept at {})",
+                tmp.display(),
+                path.display(),
+                tmp.display()
+            )
+        });
     }
     Ok(())
 }
@@ -39,4 +48,30 @@ fn uuid_suffix() -> String {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     format!("{nanos:x}-{}", std::process::id())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn atomic_write_replaces_and_cleans_up() {
+        let dir = std::env::temp_dir().join(format!("warp-notes-atomic-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("note.md");
+        write_atomically(&target, "first").unwrap();
+        write_atomically(&target, "second").unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "second");
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temp files left behind: {leftovers:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

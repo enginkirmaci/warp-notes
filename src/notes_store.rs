@@ -38,6 +38,27 @@ pub fn repo_notes_root(store_root: &Path, repo_name: &str) -> PathBuf {
     store_root.join(sanitize_entry_name(repo_name, false).unwrap_or_else(|| "notes".into()))
 }
 
+/// Resolve a `--note` launch argument (an absolute path — DevTools passes the
+/// search hit's — or one relative to the store root) to a note path, which
+/// must stay contained like every other store path. Relative paths may not
+/// traverse with `..`: a not-yet-existing target canonicalizes nowhere, so
+/// lexical containment alone cannot catch it.
+pub fn resolve_note_in_store(store_root: &Path, requested: &Path) -> anyhow::Result<PathBuf> {
+    if requested
+        .components()
+        .any(|c| c == std::path::Component::ParentDir)
+    {
+        anyhow::bail!("the --note path must not traverse outside the store");
+    }
+    let resolved = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        store_root.join(requested.to_string_lossy().trim_start_matches(['/', '\\']))
+    };
+    ensure_under_root(store_root, &resolved)?;
+    Ok(resolved)
+}
+
 pub fn load_tree(repo_notes_root: &Path) -> Vec<NotesTreeItem> {
     if !repo_notes_root.is_dir() {
         return Vec::new();
@@ -314,8 +335,17 @@ fn read_excerpt(path: &Path, term: &str) -> Option<String> {
         let Some(index) = line.to_lowercase().find(&term.to_lowercase()) else {
             continue;
         };
-        let start = index.saturating_sub(40);
-        let end = (start + 160).min(line.len());
+        // the offset was found in the lowercased copy, whose byte length can
+        // differ (İ U+0130 lowercases to 3 bytes) — walk back onto the
+        // original line's char boundaries before slicing
+        let mut start = index.saturating_sub(40);
+        while start > 0 && !line.is_char_boundary(start) {
+            start += 1;
+        }
+        let mut end = (start + 160).min(line.len());
+        while end < line.len() && !line.is_char_boundary(end) {
+            end += 1;
+        }
         let mut excerpt = String::new();
         if start > 0 {
             excerpt.push('…');
@@ -455,5 +485,36 @@ mod tests {
         create_note(&canonical_root, &parent, "note").unwrap();
         assert!(parent.join("note.md").is_file());
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn containment_rejects_escapes() {
+        let tmp = std::env::temp_dir().join(format!("dt-notes-contain-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let root = tmp.join("store");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(tmp.join("outside")).unwrap();
+        assert!(ensure_under_root(&root, &tmp.join("outside")).is_err());
+        assert!(ensure_under_root(&root, root.parent().unwrap()).is_err());
+        assert!(ensure_under_root(&root, &root).is_ok());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_note_rejects_traversal_and_joins_relative() {
+        let root = std::env::temp_dir().join(format!("dt-notes-resolve-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(resolve_note_in_store(&root, Path::new("../escape.md")).is_err());
+        // a not-yet-existing absolute path with .. must not pass lexically
+        assert!(
+            resolve_note_in_store(&root, &root.join("..").join("escape.md")).is_err(),
+            "lexical containment missed a .. escape"
+        );
+        assert_eq!(
+            resolve_note_in_store(&root, Path::new("a/b.md")).unwrap(),
+            root.join("a/b.md")
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -60,7 +60,7 @@ pub struct NotesPage {
     /// The loaded tree behind an Rc: every editor keystroke re-renders the
     /// page, and the rebuild must not deep-clone the whole tree per frame.
     tree: Rc<Vec<notes_core::NotesTreeItem>>,
-    tree_loaded_for: Option<String>,
+    tree_loaded_for: Option<PathBuf>,
     expanded: std::collections::HashSet<PathBuf>,
     open_note: Option<PathBuf>,
     /// Unsaved note contents by path — navigation never loses an edit.
@@ -162,33 +162,33 @@ impl NotesPage {
             notice: None,
             titlebar_should_move: false,
         };
-        // --note: the requested note opens right away, tree expanded to it
+        // --note: the requested note opens right away, tree expanded to it.
+        // Contained like every other store path — a stray --note must not
+        // reach (or on save, overwrite) a file outside the store.
         if let Some(path) = launch.open_note {
-            let path = page.resolve_note_path(path);
-            let root = page.notes_root();
-            for parent in path.ancestors().skip(1) {
-                if let Some(root) = &root
-                    && parent.starts_with(root)
-                {
-                    page.expanded.insert(parent.to_path_buf());
+            match notes_core::resolve_note_in_store(&page.store_root, &path) {
+                Ok(path) => {
+                    let root = page.notes_root();
+                    for parent in path.ancestors().skip(1) {
+                        if let Some(root) = &root
+                            && parent.starts_with(root)
+                        {
+                            page.expanded.insert(parent.to_path_buf());
+                        }
+                        if parent.parent().is_none() {
+                            break;
+                        }
+                    }
+                    page.open_note(path, window, cx);
                 }
-                if parent.parent().is_none() {
-                    break;
-                }
+                Err(err) => page.notice(
+                    cx,
+                    NoticeKind::Error,
+                    &format!("cannot open {}: {err}", path.display()),
+                ),
             }
-            page.open_note(path, window, cx);
         }
         page
-    }
-
-    /// --note accepts an absolute path (DevTools passes the search hit's) or
-    /// one relative to the store root.
-    fn resolve_note_path(&self, path: PathBuf) -> PathBuf {
-        if path.is_absolute() {
-            return path;
-        }
-        let text = path.to_string_lossy();
-        self.store_root.join(text.trim_start_matches(['/', '\\']))
     }
 
     fn notes_root(&self) -> Option<PathBuf> {
@@ -202,9 +202,11 @@ impl NotesPage {
 
     fn reload_tree(&mut self) {
         if let Some(root) = self.notes_root() {
-            if self.tree_loaded_for.as_deref() != Some(root.as_os_str().to_str().unwrap_or("")) {
+            // keyed by PathBuf: to_str() collapses non-UTF-8 roots to "" and
+            // would re-walk the tree every frame
+            if self.tree_loaded_for.as_ref() != Some(&root) {
                 self.tree = Rc::new(notes_core::load_tree(&root));
-                self.tree_loaded_for = root.as_os_str().to_str().map(str::to_string);
+                self.tree_loaded_for = Some(root);
             }
         } else {
             self.tree = Rc::new(Vec::new());
@@ -218,7 +220,20 @@ impl NotesPage {
             let text = self.editor.read(cx).value().to_string();
             self.dirty.insert(current, text);
         }
-        let baseline = notes_core::read_note(&path).unwrap_or_default();
+        // a note that cannot be read (non-UTF-8, permissions, deleted
+        // underneath us) must not open as an empty-looking editor — the first
+        // save would then replace the original file with the typed fragment
+        let baseline = match notes_core::read_note(&path) {
+            Ok(text) => text,
+            Err(err) => {
+                self.notice(
+                    cx,
+                    NoticeKind::Error,
+                    &format!("cannot open {}: {err}", path.display()),
+                );
+                return;
+            }
+        };
         let content = self
             .dirty
             .get(&path)
