@@ -57,7 +57,9 @@ fn main() {
             // kit components (input decorations, popovers) + our palette mapped
             // onto their theme tokens — must run before any kit component renders
             gpui_kit::init(cx);
+            warpui_kit_core::adopt_text_size(None);
             theme::apply_kit_theme(cx);
+            warpui_kit_core::follow_ui_scale(cx, theme::apply_kit_theme);
 
             let bounds = Bounds::centered(None, size(px(980.), px(700.)), cx);
             let launch = parse_launch();

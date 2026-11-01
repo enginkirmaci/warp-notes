@@ -88,6 +88,11 @@ fn repo_scope_up_button_tree_and_live_editor(cx: &mut TestAppContext) {
 
     // carded sidebar at the reference width
     let sidebar = bounds(cx, "notes-sidebar").expect("notes sidebar must render");
+    let text_size = bounds(cx, "text-size-normal").expect("the sidebar carries the text size");
+    assert!(
+        text_size.bottom() <= sidebar.bottom() && text_size.top() > sidebar.center().y,
+        "the control sits at the foot of the sidebar"
+    );
     assert_eq!(
         sidebar.size.width,
         px(300.),

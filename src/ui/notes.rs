@@ -716,7 +716,7 @@ impl NotesPage {
             ))
             .child(
                 div()
-                    .text_size(px(theme::font_title()))
+                    .text_size(px(theme::font_brand()))
                     .font_weight(FontWeight::SEMIBOLD)
                     .child("Notes"),
             )
@@ -727,7 +727,7 @@ impl NotesPage {
                         .bg(theme::CHIP)
                         .px_1p5()
                         .py_0p5()
-                        .text_size(px(theme::font_small() - 1.))
+                        .text_size(px(theme::font_meta()))
                         .text_color(theme::TEXT_MUTED)
                         .child(repo),
                 )
@@ -828,7 +828,7 @@ impl NotesPage {
             .py_1()
             .border_t_1()
             .border_color(theme::HAIRLINE)
-            .text_size(px(theme::font_small() - 1.))
+            .text_size(px(theme::font_meta()))
             .text_color(theme::TEXT_FAINT)
             .child(format!("{words} words · {chars} chars · {lines} lines"))
             .child(div().flex_1());
@@ -856,79 +856,58 @@ impl NotesPage {
     fn render_tree(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let term = self.search.read(cx).value().to_string();
         let can_create = self.notes_scope.is_some() || !self.tree.is_empty();
-        let mut tree =
-            div()
-                .id("notes-sidebar")
-                .debug_selector(|| "notes-sidebar".into())
-                .w(px(300.))
-                .h_full()
-                .flex()
-                .flex_col()
-                .min_h_0()
-                .gap_2()
-                .p_2()
-                .rounded_lg()
-                .border_1()
-                .border_color(theme::HAIRLINE)
-                .bg(theme::CARD)
-                // search row: field, "+" new note, collapse-all
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_1()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .on_key_down(cx.listener(
-                                    |this, event: &gpui::KeyDownEvent, window, cx| {
-                                        if event.keystroke.key == "escape" {
-                                            this.search.update(cx, |field, cx| {
-                                                field.set_value(String::new(), window, cx)
-                                            });
-                                            this.search_hits.clear();
-                                            cx.notify();
-                                        }
-                                    },
-                                ))
-                                .child(Input::new(&self.search).small().cleanable(true).prefix(
-                                    icon(
+        let mut tree = div()
+            .id("notes-sidebar")
+            .debug_selector(|| "notes-sidebar".into())
+            .w(px(300.))
+            .h_full()
+            .flex()
+            .flex_col()
+            .min_h_0()
+            .gap_2()
+            .p_2()
+            .rounded_lg()
+            .border_1()
+            .border_color(theme::HAIRLINE)
+            .bg(theme::CARD)
+            // search row: field, "+" new note, collapse-all
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .on_key_down(cx.listener(
+                                |this, event: &gpui::KeyDownEvent, window, cx| {
+                                    if event.keystroke.key == "escape" {
+                                        this.search.update(cx, |field, cx| {
+                                            field.set_value(String::new(), window, cx)
+                                        });
+                                        this.search_hits.clear();
+                                        cx.notify();
+                                    }
+                                },
+                            ))
+                            .child(
+                                Input::new(&self.search)
+                                    .with_size(theme::field_size())
+                                    .cleanable(true)
+                                    .prefix(icon(
                                         "icons/icon-search.svg",
                                         px(theme::icon_small() - 1.),
                                         theme::TEXT_FAINT,
-                                    ),
-                                )),
-                        )
-                        .when(can_create, |row| {
-                            row.child(
-                                div()
-                                    .id("note-new")
-                                    .a11y_toggle("New note", self.create_open)
-                                    .cursor_pointer()
-                                    .rounded_md()
-                                    .size(px(22.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .hover(|s| s.bg(theme::HOVER))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.create_open = !this.create_open;
-                                        cx.notify();
-                                    }))
-                                    .child(icon(
-                                        "icons/icon-plus.svg",
-                                        px(theme::icon_small() - 1.),
-                                        theme::TEXT_MUTED,
                                     )),
-                            )
-                        })
-                        .child(
+                            ),
+                    )
+                    .when(can_create, |row| {
+                        row.child(
                             div()
-                                .id("notes-collapse-all")
-                                .debug_selector(|| "notes-collapse-all".into())
-                                .a11y_button("Collapse all folders")
+                                .id("note-new")
+                                .a11y_toggle("New note", self.create_open)
                                 .cursor_pointer()
                                 .rounded_md()
                                 .size(px(22.))
@@ -937,70 +916,93 @@ impl NotesPage {
                                 .justify_center()
                                 .hover(|s| s.bg(theme::HOVER))
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.expanded.clear();
+                                    this.create_open = !this.create_open;
                                     cx.notify();
                                 }))
                                 .child(icon(
-                                    "icons/icon-list-bullet.svg",
+                                    "icons/icon-plus.svg",
                                     px(theme::icon_small() - 1.),
                                     theme::TEXT_MUTED,
                                 )),
+                        )
+                    })
+                    .child(
+                        div()
+                            .id("notes-collapse-all")
+                            .debug_selector(|| "notes-collapse-all".into())
+                            .a11y_button("Collapse all folders")
+                            .cursor_pointer()
+                            .rounded_md()
+                            .size(px(22.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .hover(|s| s.bg(theme::HOVER))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.expanded.clear();
+                                cx.notify();
+                            }))
+                            .child(icon(
+                                "icons/icon-list-bullet.svg",
+                                px(theme::icon_small() - 1.),
+                                theme::TEXT_MUTED,
+                            )),
+                    ),
+            )
+            // inline "new note" form, stacked for the narrow column
+            .when(self.create_open, |card| {
+                card.child(
+                    div()
+                        .id("note-create-form")
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(Input::new(&self.create_name).with_size(theme::field_size()))
+                        .child(Input::new(&self.create_folder).with_size(theme::field_size()))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .id("note-create-confirm")
+                                        .a11y_button("Create note")
+                                        .cursor_pointer()
+                                        .rounded_md()
+                                        .px_2()
+                                        .py_0p5()
+                                        .text_size(px(theme::font_body()))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .bg(theme::ACCENT)
+                                        .text_color(theme::ON_ACCENT)
+                                        .hover(|s| s.opacity(0.9))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.create_note(window, cx)
+                                        }))
+                                        .child("Create"),
+                                )
+                                .child(
+                                    div()
+                                        .id("note-create-cancel")
+                                        .a11y_button("Cancel new note")
+                                        .cursor_pointer()
+                                        .rounded_md()
+                                        .px_2()
+                                        .py_0p5()
+                                        .text_size(px(theme::font_body()))
+                                        .text_color(theme::TEXT_FAINT)
+                                        .hover(|s| s.bg(theme::HOVER))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.create_open = false;
+                                            cx.notify();
+                                        }))
+                                        .child("×"),
+                                ),
                         ),
                 )
-                // inline "new note" form, stacked for the narrow column
-                .when(self.create_open, |card| {
-                    card.child(
-                        div()
-                            .id("note-create-form")
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(Input::new(&self.create_name).small())
-                            .child(Input::new(&self.create_folder).small())
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .gap_1()
-                                    .child(
-                                        div()
-                                            .id("note-create-confirm")
-                                            .a11y_button("Create note")
-                                            .cursor_pointer()
-                                            .rounded_md()
-                                            .px_2()
-                                            .py_0p5()
-                                            .text_size(px(theme::font_small()))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .bg(theme::ACCENT)
-                                            .text_color(theme::ON_ACCENT)
-                                            .hover(|s| s.opacity(0.9))
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.create_note(window, cx)
-                                            }))
-                                            .child("Create"),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("note-create-cancel")
-                                            .a11y_button("Cancel new note")
-                                            .cursor_pointer()
-                                            .rounded_md()
-                                            .px_2()
-                                            .py_0p5()
-                                            .text_size(px(theme::font_small()))
-                                            .text_color(theme::TEXT_FAINT)
-                                            .hover(|s| s.bg(theme::HOVER))
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.create_open = false;
-                                                cx.notify();
-                                            }))
-                                            .child("×"),
-                                    ),
-                            ),
-                    )
-                });
+            });
 
         if !term.trim().is_empty() {
             let mut hits = div()
@@ -1031,13 +1033,13 @@ impl NotesPage {
                                 .flex_col()
                                 .child(
                                     div()
-                                        .text_size(px(theme::font_small()))
+                                        .text_size(px(theme::font_body()))
                                         .text_color(theme::TEXT_DIM)
                                         .child(hit.title.clone()),
                                 )
                                 .child(
                                     div()
-                                        .text_size(px(theme::font_small() - 2.))
+                                        .text_size(px(theme::font_control()))
                                         .text_color(theme::TEXT_FAINT)
                                         .child(hit.excerpt.clone()),
                                 ),
@@ -1057,7 +1059,26 @@ impl NotesPage {
                     .child(self.render_tree_items(&items, 0, cx)),
             );
         }
-        tree.into_any_element()
+        // the app has no settings page, so the shared control sits here
+        tree.child(
+            div()
+                .mt_auto()
+                .pt_2()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .border_t_1()
+                .border_color(theme::HAIRLINE)
+                .child(
+                    div()
+                        .text_size(px(theme::font_meta()))
+                        .text_color(theme::TEXT_MUTED)
+                        .child("Text size"),
+                )
+                .child(warpui_kit_core::text_size_control()),
+        )
+        .into_any_element()
     }
 
     fn render_tree_items(
@@ -1083,9 +1104,10 @@ impl NotesPage {
                 .rounded_md()
                 .px_1p5()
                 .py_0p5()
-                .text_size(px(theme::font_small()))
+                .text_size(px(theme::font_body()))
                 .when(selected, |d| {
-                    d.bg(theme::tint(theme::ACCENT)).text_color(theme::ACCENT)
+                    d.bg(theme::tint(theme::ACCENT))
+                        .text_color(theme::BLUE_BRIGHT)
                 })
                 .when(!selected, |d| d.text_color(theme::TEXT_DIM))
                 .hover(|s| s.bg(theme::HOVER))
@@ -1188,7 +1210,7 @@ impl NotesPage {
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_size(px(theme::font_small() - 1.))
+                .text_size(px(theme::font_meta()))
                 .text_color(theme::TEXT_MUTED)
                 .hover(|s| s.bg(theme::HOVER).text_color(theme::TEXT))
                 .on_click(
@@ -1226,14 +1248,14 @@ impl NotesPage {
                             .whitespace_nowrap()
                             .text_ellipsis()
                             .font_family(SharedString::from(theme::code_font()))
-                            .text_size(px(theme::font_small()))
+                            .text_size(px(theme::font_body()))
                             .text_color(theme::TEXT_MUTED)
                             .child(note_title.clone()),
                     )
                     .when(dirty, |row| {
                         row.child(
                             div()
-                                .text_size(px(theme::font_small() - 1.))
+                                .text_size(px(theme::font_meta()))
                                 .text_color(theme::AMBER_BRIGHT)
                                 .child("● unsaved"),
                         )
@@ -1252,7 +1274,7 @@ impl NotesPage {
                                 .flex_row()
                                 .items_center()
                                 .gap_1()
-                                .text_size(px(theme::font_small()))
+                                .text_size(px(theme::font_body()))
                                 .text_color(theme::TEXT_DIM)
                                 .border_1()
                                 .border_color(theme::HAIRLINE)
@@ -1332,13 +1354,13 @@ impl NotesPage {
                 ))
                 .child(
                     div()
-                        .text_size(px(theme::font_body() + 1.))
+                        .text_size(px(theme::font_heading()))
                         .text_color(theme::TEXT_MUTED)
                         .child("No note open"),
                 )
                 .child(
                     div()
-                        .text_size(px(theme::font_small()))
+                        .text_size(px(theme::font_body()))
                         .text_color(theme::TEXT_FAINT)
                         .child("Pick one from the tree, or start a new note."),
                 )
@@ -1357,8 +1379,8 @@ impl NotesPage {
                             .flex_row()
                             .items_center()
                             .gap_1p5()
-                            .text_size(px(theme::font_small()))
-                            .text_color(theme::ACCENT)
+                            .text_size(px(theme::font_body()))
+                            .text_color(theme::BLUE_BRIGHT)
                             .hover(|s| s.bg(theme::tint(theme::ACCENT)))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.create_open = true;
@@ -1369,7 +1391,7 @@ impl NotesPage {
                             .child(icon(
                                 "icons/icon-plus.svg",
                                 px(theme::icon_small()),
-                                theme::ACCENT,
+                                theme::BLUE_BRIGHT,
                             ))
                             .child("New note"),
                     )
