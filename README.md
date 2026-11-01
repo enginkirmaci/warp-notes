@@ -9,10 +9,14 @@ from DevTools into its own repo. Rust/GPUI (gpui-kit 0.7), one crate.
 - One notes store on disk: `~/.warp/notes`, one subfolder per repository.
   A legacy `~/.devtools/notes` store is renamed over on first run.
 - Folder/file tree, capped full-text search, dirty-buffer-safe navigation.
-- A single live editor: markdown renders in place while typing, source
-  markers fade off the caret line, task checkboxes toggle on click, Enter
-  continues lists; the toolbar drives the pure markdown ops (shared with the
-  family via [warpui-kit-markdown](../warpui-kit-markdown)).
+- A single live editor that works like Obsidian's live preview: markdown
+  renders in place while typing with its syntax hidden until the caret touches
+  it, checkboxes toggle on click, Enter continues lists, links and
+  `[[wikilinks]]` open on click, Ctrl+F finds; frontmatter is a Properties
+  panel, Mermaid blocks render as diagrams, tables grow from their add strips
+  and images sit inside sentences; colors come from the app's accent preset.
+  The engine and the toolbar's pure markdown ops are shared with the family
+  via [warpui-kit-markdown](../warpui-kit-markdown).
 - Clipboard image paste becomes `assets/paste-<stamp>.<ext>` next to the
   note plus a relative markdown ref.
 
@@ -43,6 +47,7 @@ installer). The suite ships both through
 
 ## Sibling deps
 
-`warpui-kit-core` (palette/fonts/icons/a11y) and `warpui-kit-markdown` (the
-live engine + toolbar ops) resolve as path deps next to this repo — clone
-them into the same parent directory.
+`warpui-kit-core` (palette/fonts/icons/a11y), `warpui-kit-markdown` (the live
+editor + toolbar ops) and `warpui-kit-diff` (code-block highlighting, through
+the markdown crate) resolve as path deps next to this repo — clone them into
+the same parent directory.

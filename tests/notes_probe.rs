@@ -1,7 +1,7 @@
 //! Headless probe for the Notes window: the carded sidebar, opening a note
 //! from the tree, the single Obsidian-style live editor, task checkboxes
-//! toggling on click, Enter continuing lists, and the launch contract
-//! (--repo pins the scope, --note opens a note right away).
+//! toggling on click, Enter continuing lists, wikilinks leading to notes, and
+//! the launch contract (--repo pins the scope, --note opens a note right away).
 
 use warp_notes::theme;
 use warp_notes::ui::notes::{Launch, NotesPage};
@@ -13,7 +13,7 @@ fn seed_notes(home: &std::path::Path) {
     let notes = home.join(".warp/notes/alpha");
     std::fs::create_dir_all(&notes).unwrap();
     std::fs::write(notes.join("note.md"), "# Note\n\nHello **world**.\n").unwrap();
-    std::fs::write(notes.join("task.md"), "- [ ] alpha task\n").unwrap();
+    std::fs::write(notes.join("task.md"), "- [ ] alpha task\nplain\n").unwrap();
     std::fs::write(notes.join("list.md"), "- alpha\n").unwrap();
     let beta = home.join(".warp/notes/beta");
     std::fs::create_dir_all(&beta).unwrap();
@@ -151,10 +151,17 @@ fn repo_scope_up_button_tree_and_live_editor(cx: &mut TestAppContext) {
     // clicking a task checkbox toggles it in place — the box is the `[ ]`
     // span of the first line, toggling keeps its offsets stable. Collapse
     // first: alpha was expanded by the note-open walk above, and the click
-    // would fold it instead of showing task.md.
+    // would fold it instead of showing task.md. The caret moves off the line
+    // first: right on the marker the box shows as source, as in Obsidian.
     click(cx, "notes-collapse-all");
     click(cx, "note-item-alpha");
     click(cx, "note-item-task.md");
+    cx.update(|_, cx| {
+        let editor = page.read(cx).editor_handle().clone();
+        editor.update(cx, |state, cx| state.set_selected_range(18..18, cx));
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
     let box_center = {
         let b = cx
             .update(|_, cx| {
@@ -186,6 +193,11 @@ fn repo_scope_up_button_tree_and_live_editor(cx: &mut TestAppContext) {
         assert!(
             value.contains("- [ ]"),
             "clicking again unchecks it: {value:?}"
+        );
+        assert_eq!(
+            page.read(cx).editor_handle().read(cx).selected_range(),
+            18..18,
+            "a checkbox click leaves the caret where it was"
         );
     });
 
@@ -252,6 +264,122 @@ fn repo_scope_up_button_tree_and_live_editor(cx: &mut TestAppContext) {
         );
     });
 
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn opening_a_note_puts_the_keyboard_in_the_editor(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-focus");
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join(".warp/notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+    click(cx, "note-item-note.md");
+    cx.simulate_input("x");
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+        let value = page.read(cx).editor_value(cx);
+        assert!(
+            value.starts_with('x'),
+            "typing goes straight into the opened note: {value:?}"
+        );
+    });
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn following_a_wikilink_opens_or_creates_the_note(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-wiki");
+    let notes = home.join(".warp/notes/alpha");
+    std::fs::write(
+        notes.join("links.md"),
+        "see [[list]] and [[Brand New]]\n\nend",
+    )
+    .unwrap();
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join(".warp/notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: Some(PathBuf::from("alpha/links.md")),
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    // the existing note: focused caret parked below, so the link renders
+    let caret_away = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| {
+            let editor = page.read(cx).editor_handle().clone();
+            let end = editor.read(cx).value().len();
+            editor.update(cx, |state, cx| state.set_selected_range(end..end, cx));
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| drop(window.draw(cx)));
+    };
+    caret_away(cx);
+    let link_at = |cx: &mut VisualTestContext, needle: &str| {
+        cx.update(|_, cx| {
+            let editor = page.read(cx).editor_handle().read(cx);
+            let start = editor.value().find(needle).unwrap();
+            editor
+                .range_to_bounds(&(start..start + needle.len()))
+                .expect("the link has bounds")
+        })
+    };
+    let bounds = link_at(cx, "list");
+    cx.simulate_click(
+        Point::new(
+            bounds.origin.x + px(2.),
+            bounds.origin.y + bounds.size.height / 2.,
+        ),
+        Modifiers::default(),
+    );
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+    cx.update(|_, cx| {
+        let value = page.read(cx).editor_value(cx);
+        assert!(
+            value.starts_with("- alpha"),
+            "the link opened list.md: {value:?}"
+        );
+    });
+
+    // a link to a note that does not exist creates it, as Obsidian does
+    click(cx, "note-item-links.md");
+    caret_away(cx);
+    let bounds = link_at(cx, "Brand New");
+    cx.simulate_click(
+        Point::new(
+            bounds.origin.x + px(2.),
+            bounds.origin.y + bounds.size.height / 2.,
+        ),
+        Modifiers::default(),
+    );
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+    assert!(
+        notes.join("Brand New.md").is_file(),
+        "the missing note was created beside the open one"
+    );
+    cx.update(|_, cx| {
+        let value = page.read(cx).editor_value(cx);
+        assert_eq!(value, "", "and opened empty");
+    });
     let _ = std::fs::remove_dir_all(&home);
 }
 

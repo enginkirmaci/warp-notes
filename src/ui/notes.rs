@@ -1,10 +1,9 @@
 //! The Notes page: per-repo markdown notes — folder/file tree on the left,
 //! a single Obsidian-style live editor on the right. Markdown renders in
-//! place while typing; source markers (`##`, `**`, backticks, link URLs)
-//! fade out wherever the cursor is not on their line, task checkboxes
-//! toggle on click, Enter continues lists, and the toolbar drives the pure
-//! markdown editing ops. Dirty in-memory buffers survive navigation, and
-//! search is capped.
+//! place while typing: source syntax stays hidden until the caret touches it,
+//! task checkboxes toggle on click, Enter continues lists, links open, and
+//! the toolbar drives the pure markdown editing ops. Dirty in-memory buffers
+//! survive navigation, and search is capped.
 
 use crate::notes_store as notes_core;
 use crate::theme;
@@ -13,15 +12,14 @@ use crate::ui::icon;
 use gpui::prelude::*;
 use gpui::{
     App, Context, Entity, FontWeight, MouseButton, SharedString, WeakEntity, Window,
-    WindowControlArea, div, px, relative,
+    WindowControlArea, div, px,
 };
 use gpui_kit::component::Sizable as _;
-use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
-use std::cell::RefCell;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use warpui_kit_markdown::{LIVE_LANGUAGE, apply, live, live_highlighter_factory};
+use warpui_kit_markdown::{LiveEditor, LiveEditorEvent, LiveEditorState, apply};
 
 /// The launch configuration the CLI parsed: the store root (DevTools passes
 /// the resolved `notes_store_path`; standalone defaults to ~/.warp/notes),
@@ -61,6 +59,8 @@ pub struct NotesPage {
     /// page, and the rebuild must not deep-clone the whole tree per frame.
     tree: Rc<Vec<notes_core::NotesTreeItem>>,
     tree_loaded_for: Option<PathBuf>,
+    /// The tree changed: the editor's wikilinks need the new note names.
+    note_names_stale: bool,
     expanded: std::collections::HashSet<PathBuf>,
     open_note: Option<PathBuf>,
     /// Unsaved note contents by path — navigation never loses an edit.
@@ -72,9 +72,8 @@ pub struct NotesPage {
     search_hits: Vec<notes_core::NotesSearchHit>,
     /// Debounce sequence; a keystroke invalidates any in-flight search.
     search_generation: u32,
-    /// The live markdown editor — the code-editor engine with the in-place
-    /// markdown highlighter installed.
-    editor: Entity<EditorState>,
+    /// The live markdown editor.
+    editor: Entity<LiveEditorState>,
     /// Delete arming: (path, expire-instant) — a second click within 3s fires.
     armed_delete: Option<(PathBuf, std::time::Instant)>,
     /// The "+ note" create form (name + optional folder).
@@ -97,22 +96,7 @@ impl NotesPage {
         let _ = std::fs::create_dir_all(&store_root);
         let notes_scope = launch.repo_scope;
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search all notes…"));
-        let caret = Rc::new(RefCell::new(Some(0..0)));
-        let highlighter_caret = caret.clone();
-        let editor = cx.new(|cx| {
-            let mut state = EditorState::new(window, cx)
-                .language(LIVE_LANGUAGE)
-                .line_number(false)
-                .folding(false)
-                .auto_close(false)
-                .smart_indent(false)
-                .submit_on_enter(true)
-                .placeholder("# Title");
-            // the markdown live highlighter owns "markdown"; anything else
-            // falls back to unstyled text.
-            state.set_highlighter_factory(live_highlighter_factory(highlighter_caret), cx);
-            state
-        });
+        let editor = cx.new(|cx| LiveEditorState::new(window, cx).placeholder("# Title"));
         let create_name = cx.new(|cx| InputState::new(window, cx).placeholder("New note name"));
         let create_folder =
             cx.new(|cx| InputState::new(window, cx).placeholder("Folder (optional)"));
@@ -122,31 +106,26 @@ impl NotesPage {
             }
         })
         .detach();
-        // plain Enter never inserts a newline itself (submit_on_enter): it
-        // continues lists here, or falls back to a bare newline
+        // rendered links lead out of the editor: the browser, or another note
         cx.subscribe_in(
             &editor,
             window,
-            |this, editor, event: &InputEvent, window, cx| {
-                if let InputEvent::PressEnter { shift: false, .. } = event {
-                    this.enter_pressed(editor, window, cx);
-                }
+            |this, _, event: &LiveEditorEvent, window, cx| match event {
+                LiveEditorEvent::OpenUrl(url) => cx.open_url(url),
+                LiveEditorEvent::OpenNote(target) => this.follow_link(target, window, cx),
+                LiveEditorEvent::Change => {}
             },
         )
         .detach();
-        // previews and marker-fading follow the editor on every keystroke and
+        // the status strip and unsaved marker follow every keystroke and
         // every caret move
-        let observe_caret = caret.clone();
-        cx.observe(&editor, move |_, editor, cx| {
-            *observe_caret.borrow_mut() = Some(editor.read(cx).selected_range());
-            cx.notify();
-        })
-        .detach();
+        cx.observe(&editor, |_, _, cx| cx.notify()).detach();
         let mut page = Self {
             store_root,
             notes_scope,
             tree: Rc::new(Vec::new()),
             tree_loaded_for: None,
+            note_names_stale: true,
             expanded: std::collections::HashSet::new(),
             open_note: None,
             dirty: HashMap::new(),
@@ -207,11 +186,18 @@ impl NotesPage {
             if self.tree_loaded_for.as_ref() != Some(&root) {
                 self.tree = Rc::new(notes_core::load_tree(&root));
                 self.tree_loaded_for = Some(root);
+                self.note_names_stale = true;
             }
         } else {
             self.tree = Rc::new(Vec::new());
             self.tree_loaded_for = None;
         }
+    }
+
+    /// Reloads the tree after a create or delete, whatever the scope.
+    fn refresh_tree(&mut self, root: &Path) {
+        self.tree = Rc::new(notes_core::load_tree(root));
+        self.note_names_stale = true;
     }
 
     pub(crate) fn open_note(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
@@ -240,11 +226,64 @@ impl NotesPage {
             .cloned()
             .unwrap_or_else(|| baseline.clone());
         self.saved_text = baseline;
+        let folder = path.parent().map(Path::to_path_buf);
         self.open_note = Some(path);
         self.editor.update(cx, |state, cx| {
-            state.set_value(content.as_str(), window, cx)
+            // relative image paths resolve next to the note
+            state.set_base_dir(folder, cx);
+            state.set_value(content, window, cx);
+            state.focus(window, cx);
         });
         cx.notify();
+    }
+
+    /// A clicked `[[wikilink]]`: the note with that name, next to the open
+    /// note first, then anywhere under the notes root. Like Obsidian, a link
+    /// to a note that does not exist yet creates it beside the open one.
+    fn follow_link(&mut self, target: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let name = target.split(['#', '^']).next().unwrap_or(target).trim();
+        if name.is_empty() {
+            return;
+        }
+        let file = if name.ends_with(".md") {
+            name.to_string()
+        } else {
+            format!("{name}.md")
+        };
+        let sibling = self
+            .open_note
+            .as_ref()
+            .and_then(|note| note.parent())
+            .map(|folder| folder.join(&file))
+            .filter(|path| path.is_file());
+        let found = sibling.or_else(|| {
+            let root = self.notes_root()?;
+            let items = notes_core::load_tree(&root);
+            find_note(&items, &file)
+        });
+        if let Some(path) = found {
+            self.open_note(path, window, cx);
+            return;
+        }
+        let Some(root) = self.notes_root() else {
+            return;
+        };
+        let folder = self
+            .open_note
+            .as_ref()
+            .and_then(|note| note.parent())
+            .map_or_else(|| root.clone(), Path::to_path_buf);
+        let Some(clean) = notes_core::sanitize_entry_name(name, true) else {
+            self.notice(cx, NoticeKind::Info, &format!("Not a usable name: {name}"));
+            return;
+        };
+        match notes_core::create_note(&root, &folder, &clean) {
+            Ok(path) => {
+                self.refresh_tree(&root);
+                self.open_note(path, window, cx);
+            }
+            Err(err) => self.notice(cx, NoticeKind::Error, &format!("note create failed: {err}")),
+        }
     }
 
     fn save_current(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
@@ -321,7 +360,7 @@ impl NotesPage {
         }
         match notes_core::create_note(&root, &target, &name) {
             Ok(path) => {
-                self.tree = Rc::new(notes_core::load_tree(&root));
+                self.refresh_tree(&root);
                 self.create_open = false;
                 self.create_name
                     .update(cx, |f, cx| f.set_value(String::new(), window, cx));
@@ -373,7 +412,7 @@ impl NotesPage {
                         self.dirty.remove(&path);
                         self.open_note = None;
                         self.saved_text.clear();
-                        self.tree = Rc::new(notes_core::load_tree(&root));
+                        self.refresh_tree(&root);
                     }
                     Err(err) => {
                         self.notice(cx, NoticeKind::Error, &format!("note delete failed: {err}"))
@@ -407,78 +446,6 @@ impl NotesPage {
             state.set_selected_range(start_b..end_b, cx);
         });
         cx.notify();
-    }
-
-    /// Plain Enter inside the live editor: continue a list under the caret
-    /// (an empty item ends it), else insert a bare newline. The editor
-    /// itself never inserts on plain Enter (submit_on_enter) — this is the
-    /// only path.
-    fn enter_pressed(
-        &mut self,
-        editor: &Entity<EditorState>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let text = editor.read(cx).value().to_string();
-        let selection = editor.read(cx).selected_range();
-        let caret_char = byte_to_char(&text, selection.start);
-        let (new_text, new_caret_char) = match apply::continue_list(&text, caret_char) {
-            Some((text, caret)) => (text, caret),
-            None => {
-                // plain newline, replacing the selection and keeping the
-                // line's indent like the kit's own editor newline does
-                let start = selection.start.min(text.len());
-                let end = selection.end.min(text.len());
-                let line_start = text[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
-                let indent =
-                    text[line_start..].len() - text[line_start..].trim_start_matches(' ').len();
-                // never re-type spaces the caret sits inside
-                let keep = indent.min(start - line_start);
-                let mut out = String::with_capacity(text.len() + 1 + keep);
-                out.push_str(&text[..start]);
-                out.push('\n');
-                out.push_str(&text[line_start..line_start + keep]);
-                out.push_str(&text[end..]);
-                (out, caret_char + 1 + keep)
-            }
-        };
-        let caret = char_to_byte(&new_text, new_caret_char);
-        editor.update(cx, |state, cx| {
-            // replace_all keeps the undo stack, unlike set_value
-            state.replace_all(new_text.as_str(), window, cx);
-            state.set_selected_range(caret..caret, cx);
-        });
-        cx.notify();
-    }
-
-    /// A plain click that landed on a task checkbox toggles it — the editor
-    /// has already placed the caret at the click offset by the time this
-    /// bubble-phase handler runs.
-    fn toggle_task_under_click(
-        &mut self,
-        event: &gpui::MouseUpEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if event.click_count != 1
-            || event.modifiers.shift
-            || event.modifiers.alt
-            || event.modifiers.control
-        {
-            return;
-        }
-        let range = self.editor.read(cx).selected_range();
-        if range.start != range.end {
-            return; // the press selected text, it was not a click on the box
-        }
-        let text = self.editor.read(cx).value().to_string();
-        if let Some(new_text) = live::toggle_task_at(&text, range.start) {
-            self.editor.update(cx, |state, cx| {
-                state.replace_all(new_text.as_str(), window, cx);
-                state.set_selected_range(range.start..range.start, cx);
-            });
-            cx.notify();
-        }
     }
 
     /// The paste hook on the live editor: a clipboard IMAGE becomes a file
@@ -550,13 +517,38 @@ impl NotesPage {
 
     /// The editor entity — for headless probes (caret, layout hit-testing).
     #[doc(hidden)]
-    pub fn editor_handle(&self) -> &Entity<EditorState> {
+    pub fn editor_handle(&self) -> &Entity<LiveEditorState> {
         &self.editor
     }
 }
 
 fn byte_to_char(text: &str, byte: usize) -> usize {
     text[..byte.min(text.len())].chars().count()
+}
+
+/// Every note's file name in the tree.
+fn collect_note_names(items: &[notes_core::NotesTreeItem], names: &mut Vec<String>) {
+    for item in items {
+        if item.is_folder {
+            collect_note_names(&item.children, names);
+        } else {
+            names.push(item.name.clone());
+        }
+    }
+}
+
+/// Depth-first search of the note tree for a file name, case-insensitive like
+/// Obsidian's link resolution.
+fn find_note(items: &[notes_core::NotesTreeItem], file: &str) -> Option<PathBuf> {
+    items.iter().find_map(|item| {
+        if item.is_folder {
+            find_note(&item.children, file)
+        } else {
+            item.name
+                .eq_ignore_ascii_case(file)
+                .then(|| item.full_path.clone())
+        }
+    })
 }
 
 /// The toolbar glyph buttons' spoken names — the visible labels ("B", "H1")
@@ -591,6 +583,12 @@ fn char_to_byte(text: &str, char_ix: usize) -> usize {
 impl Render for NotesPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         self.reload_tree();
+        if std::mem::take(&mut self.note_names_stale) {
+            let mut names = Vec::new();
+            collect_note_names(&self.tree, &mut names);
+            self.editor
+                .update(cx, |state, cx| state.set_note_names(names, cx));
+        }
         // value() hands out a SharedString (a refcount bump); the per-frame
         // work below stays allocation-free on &str so a long note does not
         // re-copy its whole text every keystroke
@@ -1306,18 +1304,13 @@ impl NotesPage {
             .into_any_element()
     }
 
-    /// The one editor element shared by the editing modes, in the UI font —
-    /// the kit Editor defaults to mono, refined away here.
-    fn editor_element(&self, cx: &Context<Self>) -> Editor {
+    /// The live editor at note size; everything else scales from it.
+    fn editor_element(&self, cx: &Context<Self>) -> LiveEditor {
         let page = cx.weak_entity();
-        Editor::new(&self.editor)
-            .bordered(false)
-            .appearance(false)
-            .h_full()
+        LiveEditor::new(&self.editor)
             .aria_label("Note body")
-            .font_family(SharedString::from(theme::ui_font()))
-            .text_size(px(theme::font_body() + 1.))
-            .line_height(relative(1.7))
+            .text_size(px(theme::font_note()))
+            .surface(theme::CARD)
             .on_paste(move |item, window, cx| Self::paste_from_clipboard(&page, item, window, cx))
     }
 
@@ -1388,15 +1381,6 @@ impl NotesPage {
             .debug_selector(|| "notes-live".into())
             .flex_1()
             .min_h_0()
-            .p_2()
-            // bubble phase: the editor has already processed the press, so
-            // the caret marks the click position for the task toggle
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, event: &gpui::MouseUpEvent, window, cx| {
-                    this.toggle_task_under_click(event, window, cx);
-                }),
-            )
             .child(self.editor_element(cx))
             .into_any_element()
     }

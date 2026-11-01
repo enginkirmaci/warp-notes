@@ -41,6 +41,11 @@ pub fn font_title() -> f32 {
     scaled(15.0)
 }
 
+/// The note text size; headings and code scale from it.
+pub fn font_note() -> f32 {
+    scaled(16.0)
+}
+
 pub fn icon_small() -> f32 {
     scaled(13.0)
 }
