@@ -86,18 +86,25 @@ fn repo_scope_up_button_tree_and_live_editor(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.update(|window, cx| drop(window.draw(cx)));
 
-    // carded sidebar at the reference width
+    // the shell list pane at the shell's default width
     let sidebar = bounds(cx, "notes-sidebar").expect("notes sidebar must render");
-    let text_size = bounds(cx, "text-size-normal").expect("the sidebar carries the text size");
-    assert!(
-        text_size.bottom() <= sidebar.bottom() && text_size.top() > sidebar.center().y,
-        "the control sits at the foot of the sidebar"
-    );
     assert_eq!(
         sidebar.size.width,
-        px(300.),
-        "sidebar card keeps its 300px width"
+        px(warpui_kit_core::shell::LIST_WIDTH),
+        "the list keeps the shell's 432px default"
     );
+
+    // the text size moved from the tree's foot to the Settings section
+    assert!(
+        bounds(cx, "text-size-normal").is_none(),
+        "the tree no longer carries the text size",
+    );
+    click(cx, "rail-settings");
+    assert!(
+        bounds(cx, "text-size-normal").is_some(),
+        "Settings carries the text size",
+    );
+    click(cx, "rail-notes");
 
     // repo-scoped launch roots at that repo's notes folder
     assert!(

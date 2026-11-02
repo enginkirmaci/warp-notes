@@ -68,7 +68,7 @@ fn main() {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     app_id: Some("warp-notes".into()),
                     titlebar: Some(TitlebarOptions {
-                        title: Some("Notes".into()),
+                        title: Some("Warp Notes".into()),
                         appears_transparent: true,
                         ..Default::default()
                     }),

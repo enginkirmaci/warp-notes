@@ -1,6 +1,7 @@
 //! ui module: the Notes window and the shared titlebar control.
 
 pub mod notes;
+pub mod settings;
 
 pub use warpui_kit_core::tooltip::tooltip_text;
 pub use warpui_kit_core::{A11y, icon};
@@ -9,8 +10,9 @@ use gpui::prelude::*;
 use gpui::{App, Styled, Window, div, px};
 
 /// One floating-window titlebar button (minimize/zoom/close, the notes up
-/// button): occludes the drag region underneath and stops the press so a
-/// click stays a click.
+/// button): a full-height strip of the 46 px bar, so its hover reads as the
+/// bar itself lighting up. It occludes the drag region underneath and stops
+/// the press so a click stays a click.
 pub fn window_button(
     id: &'static str,
     icon_path: &'static str,
@@ -29,8 +31,8 @@ pub fn window_button(
         // reaching the drag handler, so a click stays a click
         .occlude()
         .flex_shrink_0()
-        .size(px(26.))
-        .rounded_md()
+        .w(px(36.))
+        .h(px(warpui_kit_core::shell::scaled(crate::theme::TITLEBAR_H)))
         .flex()
         .items_center()
         .justify_center()

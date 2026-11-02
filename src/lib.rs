@@ -9,3 +9,4 @@ pub mod notes_store;
 pub mod paths;
 pub mod theme;
 pub mod ui;
+pub mod ui_prefs;

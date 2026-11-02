@@ -6,6 +6,12 @@
 pub use warpui_kit_core::fonts::*;
 pub use warpui_kit_core::palette;
 pub use warpui_kit_core::palette::*;
+pub use warpui_kit_core::shell::scaled;
+
+// ---- shell metrics ----------------------------------------------------------
+
+/// The title bar's height, from the shared shell.
+pub const TITLEBAR_H: f32 = warpui_kit_core::shell::TITLE_BAR_HEIGHT;
 
 // ---- gpui-kit theme mapping ------------------------------------------------
 
