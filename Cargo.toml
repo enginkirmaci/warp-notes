@@ -58,8 +58,3 @@ tracing-appender = "0.2"
 # rust-embed resolves "assets" against the process CWD at runtime, so the app
 # only finds its icons when launched from the repo root
 rust-embed = { version = "8", features = ["debug-embed"] }
-
-[profile.release]
-lto = "thin"
-codegen-units = 1
-strip = true
