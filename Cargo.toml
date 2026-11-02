@@ -23,8 +23,8 @@ gpui-kit = { version = "0.7", features = ["test-support"] }
 
 [dependencies]
 # the shared component family (local sibling repos; swap to version deps to publish)
-warpui-kit-core = { path = "../../warpui-kits/warpui-kit-core" }
-warpui-kit-markdown = { path = "../../warpui-kits/warpui-kit-markdown", features = [
+warpui-kit-core = { path = "../../kits/warpui-kit-core" }
+warpui-kit-markdown = { path = "../../kits/warpui-kit-markdown", features = [
     "mermaid",
     # code-block highlighting in notes, the family's language set
     "tree-sitter-bash",
