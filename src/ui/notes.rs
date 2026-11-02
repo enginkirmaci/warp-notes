@@ -1110,6 +1110,19 @@ impl NotesPage {
                 ))
             })
             .child(crate::ui::window_button(
+                "notes-launch-station",
+                "icons/icon-code.svg",
+                theme::RAISED.into(),
+                "Open Warp Station",
+                SHOW_TOOLTIPS,
+                |_, _, _| {
+                    if let Err(err) = std::process::Command::new("warp-station").spawn() {
+                        tracing::warn!("could not launch warp-station: {err}");
+                    }
+                },
+            ))
+            .child(div().w(px(1.)).h(px(20.)).mx_1().bg(theme::HAIRLINE))
+            .child(crate::ui::window_button(
                 "notes-minimize",
                 "icons/icon-window-minimize.svg",
                 theme::RAISED.into(),
