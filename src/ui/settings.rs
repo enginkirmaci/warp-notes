@@ -263,7 +263,9 @@ impl NotesPage {
     /// The motion choice applies at once and lands in the prefs file.
     fn set_reduce_motion(&mut self, on: bool, cx: &mut Context<Self>) {
         self.prefs.reduce_motion = on;
-        warpui_kit_core::motion::set_reduced(on);
+        warpui_kit_core::motion::set_reduced(
+            on || warpui_kit_core::motion::system_prefers_reduced(),
+        );
         self.prefs.save();
         cx.refresh_windows();
         cx.notify();

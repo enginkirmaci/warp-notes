@@ -157,7 +157,8 @@ impl NotesPage {
         // the remembered bits: list width, and the motion choice (applied
         // before the first frame so nothing animates that should not)
         let prefs = UiPrefs::load();
-        motion::set_reduced(prefs.reduce_motion);
+        // the setting or the desktop's own preference, whichever asks first
+        motion::set_reduced(prefs.reduce_motion || motion::system_prefers_reduced());
         // E2E hook: WARP_NOTES_PAGE=settings opens the rail's Settings section
         // on launch (the probes drive surfaces the pointer cannot reach
         // without taking the human's screen)
