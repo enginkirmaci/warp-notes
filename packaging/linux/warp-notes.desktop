@@ -2,7 +2,7 @@
 Type=Application
 Name=Warp Notes
 Comment=Per-repo markdown notes with a live editor
-Exec=$HOME/Developments/warp-notes/packaging/linux/out/warp-notes
+Exec=__WARP_SUITE_BIN__/warp-notes
 Icon=warpnotes
 Terminal=false
 Categories=Development;

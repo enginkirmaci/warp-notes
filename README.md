@@ -42,12 +42,12 @@ Multi-instance is free: every launch opens its own window.
 
 ```sh
 cargo build --release
-packaging/linux/install.sh        # build + desktop entry + hicolor icons
 ```
 
-Windows: `packaging/windows/build.ps1` (add `-Installer` for the Inno Setup
-installer). The suite ships both through
-[warp-suite](https://github.com/enginkirmaci/warp-suite).
+Packaging lives in the suite: `scripts/build.sh --app warp-notes` (Linux) and
+`scripts/build.ps1 -App warp-notes` (Windows) in
+[warp-suite](https://github.com/enginkirmaci/warp-suite). This directory only
+carries the assets under `packaging/`.
 
 ## Sibling deps
 
