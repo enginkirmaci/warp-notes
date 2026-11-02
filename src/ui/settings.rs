@@ -62,14 +62,14 @@ impl NotesPage {
                     div()
                         .text_size(px(theme::font_name()))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme::TEXT)
+                        .text_color(theme::text())
                         .child(section.label()),
                 )
                 .child(
                     div()
                         .mt_0p5()
                         .text_size(px(theme::font_row_meta()))
-                        .text_color(theme::TEXT_DIM)
+                        .text_color(theme::text_dim())
                         .child(section.hint()),
                 ),
             );
@@ -82,10 +82,10 @@ impl NotesPage {
                     .pt_3p5()
                     .pb_3()
                     .border_b_1()
-                    .border_color(theme::HAIRLINE)
+                    .border_color(theme::hairline())
                     .text_size(px(theme::font_list_title()))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme::TEXT)
+                    .text_color(theme::text())
                     .child("Settings"),
             )
             .child(rows);
@@ -99,7 +99,7 @@ impl NotesPage {
             .px(px(shell::DETAIL_PADDING))
             .py_4()
             .border_b_1()
-            .border_color(theme::HAIRLINE)
+            .border_color(theme::hairline())
             .child(
                 div()
                     .flex_1()
@@ -108,14 +108,14 @@ impl NotesPage {
                         div()
                             .text_size(px(theme::font_screen_title()))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme::TEXT)
+                            .text_color(theme::text())
                             .child(active.label()),
                     )
                     .child(
                         div()
                             .mt_0p5()
                             .text_size(px(theme::font_meta()))
-                            .text_color(theme::TEXT_DIM)
+                            .text_color(theme::text_dim())
                             .child(active.hint()),
                     ),
             );
@@ -171,7 +171,7 @@ impl NotesPage {
                     .text_ellipsis()
                     .font_family(SharedString::from(theme::code_font()))
                     .text_size(px(theme::font_mono_meta()))
-                    .text_color(theme::TEXT_DIM)
+                    .text_color(theme::text_dim())
                     .child(SharedString::from(self.store_root.display().to_string())),
             ))
             .child(caption(
@@ -200,11 +200,11 @@ impl NotesPage {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(div().size(px(14.)).rounded(px(3.)).bg(theme::ACCENT))
+                    .child(div().size(px(14.)).rounded(px(3.)).bg(theme::accent()))
                     .child(
                         div()
                             .text_size(px(theme::font_body()))
-                            .text_color(theme::TEXT)
+                            .text_color(theme::text())
                             .child("Copper"),
                     ),
             ))
@@ -220,7 +220,7 @@ impl NotesPage {
                 "Typeface",
                 div()
                     .text_size(px(theme::font_body()))
-                    .text_color(theme::TEXT)
+                    .text_color(theme::text())
                     .child("Inter + JetBrains Mono"),
             ))
             .child(caption(
@@ -242,7 +242,7 @@ impl NotesPage {
                         div()
                             .flex_1()
                             .text_size(px(theme::font_body()))
-                            .text_color(theme::TEXT)
+                            .text_color(theme::text())
                             .child("Reduce motion"),
                     )
                     .child(
@@ -277,8 +277,8 @@ fn card(title: &str) -> gpui::Div {
     div()
         .rounded(px(8.))
         .border_1()
-        .border_color(theme::HAIRLINE)
-        .bg(theme::SURFACE)
+        .border_color(theme::hairline())
+        .bg(theme::surface())
         .p_4()
         .flex()
         .flex_col()
@@ -287,7 +287,7 @@ fn card(title: &str) -> gpui::Div {
             div()
                 .text_size(px(theme::font_heading()))
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme::TEXT)
+                .text_color(theme::text())
                 .child(SharedString::from(title)),
         )
 }
@@ -303,7 +303,7 @@ fn setting_row(label: &str, control: impl gpui::IntoElement) -> gpui::Div {
             div()
                 .flex_1()
                 .text_size(px(theme::font_body()))
-                .text_color(theme::TEXT)
+                .text_color(theme::text())
                 .child(SharedString::from(label)),
         )
         .child(control)
@@ -312,6 +312,6 @@ fn setting_row(label: &str, control: impl gpui::IntoElement) -> gpui::Div {
 fn caption(text: &str) -> gpui::Div {
     div()
         .text_size(px(theme::font_meta()))
-        .text_color(theme::TEXT_FAINT)
+        .text_color(theme::text_faint())
         .child(SharedString::from(text))
 }

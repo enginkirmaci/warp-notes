@@ -781,7 +781,7 @@ impl Render for NotesPage {
             .flex()
             .flex_col()
             .min_h_0()
-            .bg(theme::BACKGROUND)
+            .bg(theme::background())
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 let control = event.keystroke.modifiers.control;
                 if control && event.keystroke.key == "s" {
@@ -953,9 +953,9 @@ impl NotesPage {
             .w(px(SPLITTER_WIDTH))
             .h_full()
             .flex_shrink_0()
-            .bg(theme::WELL)
+            .bg(theme::well())
             .cursor_col_resize()
-            .hover(|s| s.bg(theme::LINE_STRONG))
+            .hover(|s| s.bg(theme::line_strong()))
             .on_mouse_down(
                 MouseButton::Left,
                 move |event: &gpui::MouseDownEvent, _, cx| {
@@ -1039,9 +1039,9 @@ impl NotesPage {
             .border_color(if error {
                 theme::tint(theme::DANGER)
             } else {
-                gpui::Hsla::from(theme::HAIRLINE)
+                gpui::Hsla::from(theme::hairline())
             })
-            .bg(theme::OVERLAY)
+            .bg(theme::overlay())
             .shadow_lg()
             .p_2p5()
             .child(icon(
@@ -1054,14 +1054,18 @@ impl NotesPage {
                 if error {
                     theme::DANGER
                 } else {
-                    theme::TEXT_DIM
+                    theme::text_dim()
                 },
             ))
             .child(
                 div()
                     .min_w_0()
                     .text_size(px(theme::font_body()))
-                    .text_color(if error { theme::TEXT } else { theme::TEXT_DIM })
+                    .text_color(if error {
+                        theme::text()
+                    } else {
+                        theme::text_dim()
+                    })
                     .child(notice.text.clone()),
             );
         if error {
@@ -1073,7 +1077,7 @@ impl NotesPage {
                     .flex_shrink_0()
                     .rounded(px(6.))
                     .p_0p5()
-                    .hover(|s| s.bg(theme::RAISED))
+                    .hover(|s| s.bg(theme::raised()))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.notice = None;
                         cx.notify();
@@ -1081,7 +1085,7 @@ impl NotesPage {
                     .child(icon(
                         "icons/icon-close.svg",
                         px(theme::icon_small() - 4.),
-                        theme::TEXT_FAINT,
+                        theme::text_faint(),
                     )),
             );
         }
@@ -1149,11 +1153,11 @@ impl NotesPage {
                     .justify_center()
                     .size(px(28.))
                     .rounded(px(6.))
-                    .bg(theme::ACCENT_SOFT)
+                    .bg(theme::accent_soft())
                     .child(icon(
                         "icons/icon-note.svg",
                         px(theme::icon_small()),
-                        theme::ACCENT_INK,
+                        theme::accent_ink(),
                     )),
             )
             .child(
@@ -1161,7 +1165,7 @@ impl NotesPage {
                     .flex_shrink_0()
                     .text_size(px(theme::font_brand()))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme::TEXT)
+                    .text_color(theme::text())
                     .whitespace_nowrap()
                     .child("Warp Notes"),
             )
@@ -1172,11 +1176,11 @@ impl NotesPage {
                         .h(px(24.))
                         .px_2p5()
                         .rounded(px(6.))
-                        .bg(theme::RAISED)
+                        .bg(theme::raised())
                         .flex()
                         .items_center()
                         .text_size(px(theme::font_meta()))
-                        .text_color(theme::TEXT_DIM)
+                        .text_color(theme::text_dim())
                         .whitespace_nowrap()
                         .overflow_hidden()
                         .max_w(px(220.))
@@ -1187,7 +1191,7 @@ impl NotesPage {
                 .child(crate::ui::window_button(
                     "notes-up-dir",
                     "icons/icon-arrow-up.svg",
-                    theme::RAISED.into(),
+                    theme::raised().into(),
                     "Up to all repositories' notes",
                     SHOW_TOOLTIPS,
                     cx.listener(|this, _, _, cx| {
@@ -1202,7 +1206,7 @@ impl NotesPage {
                 row.child(crate::ui::window_button(
                     "notes-list-toggle",
                     "icons/icon-panel-left.svg",
-                    theme::RAISED.into(),
+                    theme::raised().into(),
                     if self.list_visible {
                         "Hide list"
                     } else {
@@ -1218,7 +1222,7 @@ impl NotesPage {
             .child(crate::ui::window_button(
                 "notes-launch-station",
                 "icons/icon-code.svg",
-                theme::RAISED.into(),
+                theme::raised().into(),
                 "Open Warp Station",
                 SHOW_TOOLTIPS,
                 |_, _, _| {
@@ -1227,11 +1231,11 @@ impl NotesPage {
                     }
                 },
             ))
-            .child(div().w(px(1.)).h(px(20.)).mx_1().bg(theme::HAIRLINE))
+            .child(div().w(px(1.)).h(px(20.)).mx_1().bg(theme::hairline()))
             .child(crate::ui::window_button(
                 "notes-minimize",
                 "icons/icon-window-minimize.svg",
-                theme::RAISED.into(),
+                theme::raised().into(),
                 "Minimize",
                 SHOW_TOOLTIPS,
                 |_, window, _| window.minimize_window(),
@@ -1243,7 +1247,7 @@ impl NotesPage {
                 } else {
                     "icons/icon-window-maximize.svg"
                 },
-                theme::RAISED.into(),
+                theme::raised().into(),
                 if window.is_maximized() {
                     "Restore"
                 } else {
@@ -1289,7 +1293,7 @@ impl NotesPage {
             .px_4()
             .pb_2()
             .border_b_1()
-            .border_color(theme::BORDER_LIGHT)
+            .border_color(theme::border_light())
             .child(
                 div()
                     .flex_1()
@@ -1318,7 +1322,7 @@ impl NotesPage {
                 div()
                     .flex_shrink_0()
                     .text_size(px(theme::font_meta()))
-                    .text_color(theme::TEXT_FAINT)
+                    .text_color(theme::text_faint())
                     .child(counter),
             )
             .child(
@@ -1331,12 +1335,12 @@ impl NotesPage {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .hover(|s| s.bg(theme::RAISED))
+                    .hover(|s| s.bg(theme::raised()))
                     .on_click(cx.listener(|this, _, window, cx| this.close_find(window, cx)))
                     .child(icon(
                         "icons/icon-close.svg",
                         px(theme::icon_small() - 2.),
-                        theme::TEXT_MUTED,
+                        theme::text_muted(),
                     )),
             )
             .into_any_element()
@@ -1376,9 +1380,9 @@ impl NotesPage {
             .gap_3()
             .py_1p5()
             .border_t_1()
-            .border_color(theme::BORDER_LIGHT)
+            .border_color(theme::border_light())
             .text_size(px(theme::font_meta()))
-            .text_color(theme::TEXT_FAINT)
+            .text_color(theme::text_faint())
             .child(format!("{words} words · {chars} chars · {lines} lines"))
             .child(div().flex_1());
         if dirty {
@@ -1418,7 +1422,7 @@ impl NotesPage {
                             .flex_1()
                             .text_size(px(theme::font_list_title()))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme::TEXT)
+                            .text_color(theme::text())
                             .child("Notes"),
                     )
                     .when(can_create, |row| {
@@ -1432,7 +1436,7 @@ impl NotesPage {
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .hover(|s| s.bg(theme::RAISED))
+                                .hover(|s| s.bg(theme::raised()))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.create_open = !this.create_open;
                                     cx.notify();
@@ -1440,7 +1444,7 @@ impl NotesPage {
                                 .child(icon(
                                     "icons/icon-plus.svg",
                                     px(theme::icon_small() - 1.),
-                                    theme::TEXT_MUTED,
+                                    theme::text_muted(),
                                 )),
                         )
                     })
@@ -1455,7 +1459,7 @@ impl NotesPage {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .hover(|s| s.bg(theme::RAISED))
+                            .hover(|s| s.bg(theme::raised()))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.expanded.clear();
                                 cx.notify();
@@ -1463,7 +1467,7 @@ impl NotesPage {
                             .child(icon(
                                 "icons/icon-list-bullet.svg",
                                 px(theme::icon_small() - 1.),
-                                theme::TEXT_MUTED,
+                                theme::text_muted(),
                             )),
                     ),
             )
@@ -1489,7 +1493,7 @@ impl NotesPage {
                                 .prefix(icon(
                                     "icons/icon-search.svg",
                                     px(theme::icon_small() - 1.),
-                                    theme::TEXT_FAINT,
+                                    theme::text_faint(),
                                 )),
                         ),
                 ),
@@ -1525,8 +1529,8 @@ impl NotesPage {
                                         .items_center()
                                         .text_size(px(theme::font_control()))
                                         .font_weight(FontWeight::MEDIUM)
-                                        .bg(theme::ACCENT)
-                                        .text_color(theme::ON_ACCENT)
+                                        .bg(theme::accent())
+                                        .text_color(theme::on_accent())
                                         .hover(|s| s.opacity(0.9))
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.create_note(window, cx)
@@ -1544,8 +1548,8 @@ impl NotesPage {
                                         .flex()
                                         .items_center()
                                         .text_size(px(theme::font_control()))
-                                        .text_color(theme::TEXT_MUTED)
-                                        .hover(|s| s.bg(theme::RAISED))
+                                        .text_color(theme::text_muted())
+                                        .hover(|s| s.bg(theme::raised()))
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.create_open = false;
                                             cx.notify();
@@ -1572,7 +1576,7 @@ impl NotesPage {
                         .px_2()
                         .py_1p5()
                         .text_size(px(theme::font_meta()))
-                        .text_color(theme::TEXT_FAINT)
+                        .text_color(theme::text_faint())
                         .child(if count == 0 {
                             "No matches.".to_string()
                         } else {
@@ -1588,7 +1592,7 @@ impl NotesPage {
                         .rounded(px(6.))
                         .px_2()
                         .py_1p5()
-                        .hover(|s| s.bg(theme::RAISED))
+                        .hover(|s| s.bg(theme::raised()))
                         .on_click({
                             let path = hit.path.clone();
                             cx.listener(move |this, _, window, cx| {
@@ -1602,13 +1606,13 @@ impl NotesPage {
                                 .child(
                                     div()
                                         .text_size(px(theme::font_body()))
-                                        .text_color(theme::TEXT_DIM)
+                                        .text_color(theme::text_dim())
                                         .child(hit.title.clone()),
                                 )
                                 .child(
                                     div()
                                         .text_size(px(theme::font_meta()))
-                                        .text_color(theme::TEXT_FAINT)
+                                        .text_color(theme::text_faint())
                                         .child(hit.excerpt.clone()),
                                 ),
                         ),
@@ -1668,18 +1672,18 @@ impl NotesPage {
                 .pr_3()
                 .text_size(px(theme::font_row_meta()))
                 .when(selected, |d| {
-                    d.bg(theme::RAISED).text_color(theme::TEXT).child(
+                    d.bg(theme::raised()).text_color(theme::text()).child(
                         div()
                             .absolute()
                             .top_0()
                             .bottom_0()
                             .left_0()
                             .w(px(3.))
-                            .bg(theme::ACCENT),
+                            .bg(theme::accent()),
                     )
                 })
-                .when(!selected, |d| d.text_color(theme::TEXT_DIM))
-                .when(!selected, |d| d.hover(|s| s.bg(theme::PANEL)))
+                .when(!selected, |d| d.text_color(theme::text_dim()))
+                .when(!selected, |d| d.hover(|s| s.bg(theme::panel())))
                 .on_click({
                     let item = item.clone();
                     cx.listener(move |this, _, window, cx| {
@@ -1711,20 +1715,20 @@ impl NotesPage {
                                     "icons/icon-chevron-right.svg"
                                 },
                                 px(theme::icon_tiny()),
-                                theme::TEXT_FAINT,
+                                theme::text_faint(),
                             ))
                         })
                         .child(if item.is_folder {
                             icon(
                                 "icons/icon-folder.svg",
                                 px(theme::icon_tiny()),
-                                theme::TEXT_MUTED,
+                                theme::text_muted(),
                             )
                         } else {
                             icon(
                                 "icons/icon-note.svg",
                                 px(theme::icon_tiny()),
-                                theme::TEXT_MUTED,
+                                theme::text_muted(),
                             )
                         })
                         .child(div().truncate().min_w_0().child(item.name.clone())),
@@ -1783,7 +1787,7 @@ impl NotesPage {
                         .mx_1()
                         .h(px(theme::scaled(14.)))
                         .w(px(1.))
-                        .bg(theme::LINE_STRONG),
+                        .bg(theme::line_strong()),
                 );
             }
             let mut button = div()
@@ -1796,13 +1800,17 @@ impl NotesPage {
                 .items_center()
                 .justify_center()
                 .text_size(px(theme::font_meta()))
-                .text_color(theme::TEXT_MUTED)
-                .hover(|s| s.bg(theme::RAISED).text_color(theme::TEXT))
+                .text_color(theme::text_muted())
+                .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
                 .on_click(
                     cx.listener(move |this, _, window, cx| this.apply_format(format, window, cx)),
                 );
             if let Some(path) = icon_path {
-                button = button.child(icon(path, px(theme::icon_small() - 2.), theme::TEXT_MUTED));
+                button = button.child(icon(
+                    path,
+                    px(theme::icon_small() - 2.),
+                    theme::text_muted(),
+                ));
             } else {
                 button = button.child(label);
             }
@@ -1818,7 +1826,7 @@ impl NotesPage {
             .px_4()
             .pb_2()
             .border_b_1()
-            .border_color(theme::BORDER_LIGHT)
+            .border_color(theme::border_light())
             .child(
                 div()
                     .flex()
@@ -1835,7 +1843,7 @@ impl NotesPage {
                             .text_ellipsis()
                             .font_family(SharedString::from(theme::code_font()))
                             .text_size(px(theme::font_mono_meta()))
-                            .text_color(theme::TEXT_DIM)
+                            .text_color(theme::text_dim())
                             .child(note_title.clone()),
                     )
                     .when(dirty, |row| {
@@ -1862,11 +1870,11 @@ impl NotesPage {
                                 .gap_1p5()
                                 .text_size(px(theme::font_control()))
                                 .font_weight(FontWeight::MEDIUM)
-                                .text_color(theme::TEXT)
+                                .text_color(theme::text())
                                 .border_1()
-                                .border_color(theme::LINE_STRONG)
-                                .bg(theme::PANEL)
-                                .hover(|s| s.bg(theme::RAISED))
+                                .border_color(theme::line_strong())
+                                .bg(theme::panel())
+                                .hover(|s| s.bg(theme::raised()))
                                 .on_click(
                                     cx.listener(|this, _, window, cx| {
                                         this.save_current(window, cx)
@@ -1875,7 +1883,7 @@ impl NotesPage {
                                 .child(icon(
                                     "icons/icon-save.svg",
                                     px(theme::icon_small() - 2.),
-                                    theme::TEXT_DIM,
+                                    theme::text_dim(),
                                 ))
                                 .child("Save"),
                         )
@@ -1905,15 +1913,15 @@ impl NotesPage {
                                         .child("Confirm")
                                 })
                                 .when(!armed, |d| {
-                                    d.text_color(theme::TEXT_FAINT)
-                                        .hover(|s| s.bg(theme::RAISED))
+                                    d.text_color(theme::text_faint())
+                                        .hover(|s| s.bg(theme::raised()))
                                 })
                                 .on_click(cx.listener(|this, _, _, cx| this.delete_current(cx)))
                                 .when(!armed, |d| {
                                     d.child(icon(
                                         "icons/icon-trash.svg",
                                         px(theme::icon_small() - 2.),
-                                        theme::TEXT_FAINT,
+                                        theme::text_faint(),
                                     ))
                                 }),
                         )
@@ -1928,7 +1936,7 @@ impl NotesPage {
                         .gap_2()
                         .pb_1()
                         .text_size(px(theme::font_meta()))
-                        .text_color(theme::TEXT_FAINT)
+                        .text_color(theme::text_faint())
                         .child(
                             div()
                                 .min_w_0()
@@ -1954,7 +1962,7 @@ impl NotesPage {
         LiveEditor::new(&self.editor)
             .aria_label("Note body")
             .text_size(px(theme::font_note()))
-            .surface(theme::PANEL)
+            .surface(theme::panel())
             .on_paste(move |item, window, cx| Self::paste_from_clipboard(&page, item, window, cx))
     }
 
@@ -1972,18 +1980,18 @@ impl NotesPage {
                 .child(icon(
                     "icons/icon-note.svg",
                     px(theme::icon_large() + 8.),
-                    theme::TEXT_FAINT,
+                    theme::text_faint(),
                 ))
                 .child(
                     div()
                         .text_size(px(theme::font_heading()))
-                        .text_color(theme::TEXT_MUTED)
+                        .text_color(theme::text_muted())
                         .child("No note open"),
                 )
                 .child(
                     div()
                         .text_size(px(theme::font_body()))
-                        .text_color(theme::TEXT_FAINT)
+                        .text_color(theme::text_faint())
                         .child("Pick one from the tree, or start a new note."),
                 )
                 .when(can_create, |column| {
@@ -2003,9 +2011,9 @@ impl NotesPage {
                             .text_size(px(theme::font_control()))
                             .font_weight(FontWeight::MEDIUM)
                             .border_1()
-                            .border_color(theme::ACCENT_INK)
-                            .text_color(theme::ACCENT_INK)
-                            .hover(|s| s.bg(theme::RAISED))
+                            .border_color(theme::accent_ink())
+                            .text_color(theme::accent_ink())
+                            .hover(|s| s.bg(theme::raised()))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.create_open = true;
                                 this.create_name
@@ -2015,7 +2023,7 @@ impl NotesPage {
                             .child(icon(
                                 "icons/icon-plus.svg",
                                 px(theme::icon_small() - 2.),
-                                theme::ACCENT_INK,
+                                theme::accent_ink(),
                             ))
                             .child("New note"),
                     )

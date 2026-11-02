@@ -43,6 +43,6 @@ pub fn window_button(
         .child(icon(
             icon_path,
             px(crate::theme::icon_medium()),
-            crate::theme::TEXT_MUTED,
+            crate::theme::text_muted(),
         ))
 }
