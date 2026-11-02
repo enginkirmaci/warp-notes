@@ -57,6 +57,12 @@ fn main() {
             // kit components (input decorations, popovers) + our palette mapped
             // onto their theme tokens — must run before any kit component renders
             gpui_kit::init(cx);
+            // the editor's find bar; no key context, so no input swallows it
+            cx.bind_keys([gpui::KeyBinding::new(
+                "ctrl-f",
+                warp_notes::ui::notes::OpenFind,
+                None,
+            )]);
             warpui_kit_core::adopt_text_size(None);
             theme::apply_kit_theme(cx);
             warpui_kit_core::follow_ui_scale(cx, theme::apply_kit_theme);

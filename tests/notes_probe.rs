@@ -6,7 +6,9 @@
 use warp_notes::theme;
 use warp_notes::ui::notes::{Launch, NotesPage};
 
-use gpui::{Bounds, Modifiers, Pixels, Point, TestAppContext, VisualTestContext, px, size};
+use gpui::{
+    AppContext, Bounds, Modifiers, Pixels, Point, TestAppContext, VisualTestContext, px, size,
+};
 use std::path::PathBuf;
 
 fn seed_notes(home: &std::path::Path) {
@@ -608,4 +610,61 @@ fn a_mixed_clipboard_pastes_text_not_image(tcx: &mut TestAppContext) {
     );
 
     let _ = std::fs::remove_dir_all(&probe.home);
+}
+
+#[gpui::test]
+fn ctrl_f_opens_find_and_selects_the_first_match(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    // main.rs registers this; the probe builds the window directly
+    cx.update(|cx| {
+        cx.bind_keys([gpui::KeyBinding::new(
+            "ctrl-f",
+            warp_notes::ui::notes::OpenFind,
+            None,
+        )]);
+    });
+
+    let home = temp_home("warpnotes-probe-find");
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join(".warp/notes")),
+            repo_scope: None,
+            open_note: Some(home.join(".warp/notes/alpha/note.md")),
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    // the design's Ctrl+F opens the bar on the open note
+    cx.simulate_keystrokes("ctrl-f");
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+    assert!(
+        bounds(cx, "notes-find-bar").is_some(),
+        "Ctrl+F opens the find bar"
+    );
+
+    // typing walks the editor's text: the first "world" is selected (byte 16)
+    cx.simulate_input("world");
+    cx.run_until_parked();
+    let selected = cx.read_entity(&page, |page, cx| page.editor_selected_range(cx));
+    assert_eq!(
+        selected,
+        16..21,
+        "the first match is selected in the editor"
+    );
+
+    // Escape closes it and gives the editor the keyboard back
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+    assert!(
+        bounds(cx, "notes-find-bar").is_none(),
+        "Escape closes the find bar"
+    );
+    let _ = std::fs::remove_dir_all(&home);
 }

@@ -25,6 +25,9 @@ use std::rc::Rc;
 use warpui_kit_core::{motion, shell};
 use warpui_kit_markdown::{LiveEditor, LiveEditorEvent, LiveEditorState, apply};
 
+// Ctrl+F: open the editor's find bar (bound in main.rs).
+gpui::actions!(warp_notes, [OpenFind]);
+
 /// The splitter between the list and the detail.
 const SPLITTER_WIDTH: f32 = 4.;
 
@@ -106,6 +109,11 @@ pub struct NotesPage {
     search_hits: Vec<notes_core::NotesSearchHit>,
     /// Debounce sequence; a keystroke invalidates any in-flight search.
     search_generation: u32,
+    /// Ctrl+F in the editor: the find bar, its byte ranges and the current hit.
+    find_open: bool,
+    find: Entity<InputState>,
+    find_hits: Vec<std::ops::Range<usize>>,
+    find_index: usize,
     /// The live markdown editor.
     editor: Entity<LiveEditorState>,
     /// Delete arming: (path, expire-instant) — a second click within 3s fires.
@@ -131,6 +139,13 @@ impl NotesPage {
         let notes_scope = launch.repo_scope;
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search all notes…"));
         let editor = cx.new(|cx| LiveEditorState::new(window, cx).placeholder("# Title"));
+        let find = cx.new(|cx| InputState::new(window, cx).placeholder("Find in note…"));
+        cx.subscribe(&find, |this, field, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.run_find(field.read(cx).value().to_string(), cx);
+            }
+        })
+        .detach();
         let create_name = cx.new(|cx| InputState::new(window, cx).placeholder("New note name"));
         let create_folder =
             cx.new(|cx| InputState::new(window, cx).placeholder("Folder (optional)"));
@@ -184,6 +199,10 @@ impl NotesPage {
             search,
             search_hits: Vec::new(),
             search_generation: 0,
+            find_open: false,
+            find,
+            find_hits: Vec::new(),
+            find_index: 0,
             editor,
             armed_delete: None,
             create_open: false,
@@ -277,6 +296,10 @@ impl NotesPage {
             .cloned()
             .unwrap_or_else(|| baseline.clone());
         self.saved_text = baseline;
+        // the bar belongs to the note it was opened on
+        self.find_open = false;
+        self.find_hits.clear();
+        self.find_index = 0;
         let folder = path.parent().map(Path::to_path_buf);
         self.open_note = Some(path);
         self.editor.update(cx, |state, cx| {
@@ -356,6 +379,58 @@ impl NotesPage {
     /// The sidebar search: the walk reads up to 2000 note files, so it is
     /// debounced and pushed off the UI thread — a newer keystroke invalidates
     /// whatever is still in flight.
+    /// Ctrl+F: every match of the term, case-insensitive when the term is
+    /// ASCII (the lowercase copy keeps every byte offset in place), and the
+    /// first one selected in the editor.
+    fn run_find(&mut self, term: String, cx: &mut Context<Self>) {
+        self.find_hits.clear();
+        self.find_index = 0;
+        let text = self.editor.read(cx).value().to_string();
+        let term = term.trim().to_string();
+        if !term.is_empty() && self.open_note.is_some() {
+            let (hay, needle) = if term.is_ascii() {
+                (text.to_ascii_lowercase(), term.to_ascii_lowercase())
+            } else {
+                (text.clone(), term.clone())
+            };
+            let mut from = 0;
+            while let Some(offset) = hay[from..].find(&needle) {
+                let start = from + offset;
+                self.find_hits.push(start..start + needle.len());
+                from = start + needle.len().max(1);
+            }
+        }
+        self.select_find_hit(cx);
+        cx.notify();
+    }
+
+    /// Puts the editor's selection on the current match, so the note shows
+    /// where it is even while the find field keeps the keyboard.
+    fn select_find_hit(&mut self, cx: &mut Context<Self>) {
+        if let Some(range) = self.find_hits.get(self.find_index).cloned() {
+            self.editor
+                .update(cx, |editor, cx| editor.set_selected_range(range, cx));
+        }
+    }
+
+    /// Enter and Shift+Enter walk the matches, wrapping at either end.
+    fn step_find(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if self.find_hits.is_empty() {
+            return;
+        }
+        let len = self.find_hits.len() as isize;
+        self.find_index = (self.find_index as isize + delta).rem_euclid(len) as usize;
+        self.select_find_hit(cx);
+        cx.notify();
+    }
+
+    fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.find_open = false;
+        cx.notify();
+        let editor = self.editor.clone();
+        editor.update(cx, |editor, cx| editor.focus(window, cx));
+    }
+
     fn run_search(&mut self, term: String, cx: &mut Context<Self>) {
         self.search_generation += 1;
         let generation = self.search_generation;
@@ -560,6 +635,12 @@ impl NotesPage {
         self.editor.read(cx).value().to_string()
     }
 
+    /// The editor's selection — for headless probes (find).
+    #[doc(hidden)]
+    pub fn editor_selected_range(&self, cx: &gpui::App) -> std::ops::Range<usize> {
+        self.editor.read(cx).selected_range()
+    }
+
     /// The dirty state of the open note — for headless probes.
     #[doc(hidden)]
     pub fn is_dirty(&self, cx: &gpui::App) -> bool {
@@ -723,10 +804,31 @@ impl Render for NotesPage {
                     };
                     cx.notify();
                     cx.stop_propagation();
+                } else if control && event.keystroke.key == "f" && this.open_note.is_some() {
+                    this.find_open = true;
+                    this.find.update(cx, |field, cx| field.focus(window, cx));
+                    let term = this.find.read(cx).value().to_string();
+                    this.run_find(term, cx);
+                    cx.notify();
+                    cx.stop_propagation();
+                } else if event.keystroke.key == "escape" && this.find_open {
+                    this.close_find(window, cx);
+                    cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.create_open {
                     this.create_open = false;
                     cx.notify();
                     cx.stop_propagation();
+                }
+            }))
+            // the keybinding path: the action fires even where a focused
+            // editor swallows the key event itself
+            .on_action(cx.listener(|this, _: &OpenFind, window, cx| {
+                if this.open_note.is_some() {
+                    this.find_open = true;
+                    this.find.update(cx, |field, cx| field.focus(window, cx));
+                    let term = this.find.read(cx).value().to_string();
+                    this.run_find(term, cx);
+                    cx.notify();
                 }
             }))
             .child(self.render_titlebar(window, cx))
@@ -824,6 +926,9 @@ impl NotesPage {
                                     column.child(
                                         self.render_editor_head(note_title, dirty, armed, cx),
                                     )
+                                })
+                                .when(self.find_open, |column| {
+                                    column.child(self.render_find_bar(cx))
                                 })
                                 .child(self.render_editor(cx))
                                 .when(self.open_note.is_some(), |column| {
@@ -1160,6 +1265,80 @@ impl NotesPage {
                 SHOW_TOOLTIPS,
                 |_, window, _| window.remove_window(),
             ))
+            .into_any_element()
+    }
+
+    /// The find bar: the term, the match count, Enter/Shift+Enter to walk the
+    /// matches, Escape or × to close. It keeps the keyboard, so the editor's
+    /// selection marks the match without stealing the typing.
+    fn render_find_bar(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let count = self.find_hits.len();
+        let counter = if count == 0 {
+            "No matches".to_string()
+        } else {
+            format!("{}/{}", self.find_index + 1, count)
+        };
+        div()
+            .id("notes-find-bar")
+            .debug_selector(|| "notes-find-bar".into())
+            .flex_shrink_0()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .px_4()
+            .pb_2()
+            .border_b_1()
+            .border_color(theme::BORDER_LIGHT)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                        match event.keystroke.key.as_str() {
+                            "enter" => {
+                                let delta = if event.keystroke.modifiers.shift {
+                                    -1
+                                } else {
+                                    1
+                                };
+                                this.step_find(delta, cx);
+                                cx.stop_propagation();
+                            }
+                            "escape" => {
+                                this.close_find(window, cx);
+                                cx.stop_propagation();
+                            }
+                            _ => {}
+                        }
+                    }))
+                    .child(Input::new(&self.find).with_size(theme::field_size())),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_size(px(theme::font_meta()))
+                    .text_color(theme::TEXT_FAINT)
+                    .child(counter),
+            )
+            .child(
+                div()
+                    .id("notes-find-close")
+                    .a11y_button("Close find")
+                    .cursor_pointer()
+                    .rounded(px(6.))
+                    .size(px(theme::scaled(26.)))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .hover(|s| s.bg(theme::RAISED))
+                    .on_click(cx.listener(|this, _, window, cx| this.close_find(window, cx)))
+                    .child(icon(
+                        "icons/icon-close.svg",
+                        px(theme::icon_small() - 2.),
+                        theme::TEXT_MUTED,
+                    )),
+            )
             .into_any_element()
     }
 
