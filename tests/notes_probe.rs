@@ -668,3 +668,59 @@ fn ctrl_f_opens_find_and_selects_the_first_match(cx: &mut TestAppContext) {
     );
     let _ = std::fs::remove_dir_all(&home);
 }
+
+/// A store with thousands of notes must cost what a small one costs: the tree
+/// is virtualized, so only the rows in the viewport are laid out. Before the
+/// `uniform_list` change every note became an element on every frame.
+#[gpui::test]
+fn a_large_store_lays_out_only_the_visible_rows(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+
+    let home = std::env::temp_dir().join(format!("warpnotes-probe-large-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let notes = home.join(".warp/notes/alpha");
+    std::fs::create_dir_all(&notes).unwrap();
+    // 2000 notes: comfortably more than a viewport can show
+    for ix in 0..2000 {
+        std::fs::write(notes.join(format!("note-{ix:04}.md")), "# t\n").unwrap();
+    }
+
+    let (handle, _page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join(".warp/notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    // the first rows are on screen
+    assert!(
+        bounds(cx, "note-item-note-0000.md").is_some(),
+        "the top of the tree renders",
+    );
+    // and the far end of the list is not laid out at all: with 2000 rows and a
+    // 700px window, the virtualized list stops long before the last note
+    assert!(
+        bounds(cx, "note-item-note-1999.md").is_none(),
+        "rows past the viewport are never built",
+    );
+    let visible = (0..2000)
+        .filter(|ix| {
+            let selector: &'static str =
+                Box::leak(format!("note-item-note-{ix:04}.md").into_boxed_str());
+            bounds(cx, selector).is_some()
+        })
+        .count();
+    assert!(
+        visible < 60,
+        "a 700px pane lays out a screenful, not the store ({visible} rows)",
+    );
+
+    let _ = std::fs::remove_dir_all(&home);
+}

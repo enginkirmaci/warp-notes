@@ -14,7 +14,7 @@ use crate::ui_prefs::UiPrefs;
 use gpui::prelude::*;
 use gpui::{
     App, Context, Entity, FontWeight, MouseButton, Pixels, SharedString, WeakEntity, Window,
-    WindowControlArea, canvas, div, px,
+    WindowControlArea, canvas, div, px, uniform_list,
 };
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -71,6 +71,9 @@ fn notice_ttl(kind: NoticeKind) -> std::time::Duration {
 
 /// Tooltips always show in the standalone window (DevTools gates its own
 /// embedded surfaces by a setting; this app has none).
+/// One tree row: fixed, so `uniform_list` can size the whole list.
+const TREE_ROW_HEIGHT: f32 = 34.;
+
 const SHOW_TOOLTIPS: bool = true;
 
 pub struct NotesPage {
@@ -1630,135 +1633,165 @@ impl NotesPage {
             }
             tree = tree.child(hits);
         } else {
-            // Rc clone — the tree is shared with reload sites, never copied
-            let items = self.tree.clone();
-            tree = tree.child(
-                div()
-                    .id("notes-tree-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .pt_1()
-                    .pb_3()
-                    .child(self.render_tree_items(&items, 0, cx)),
-            );
+            // uniform_list owns the scrolling: only the rows in the viewport
+            // are laid out, however many notes the store holds
+            tree = tree.child(self.render_tree_list(cx));
         }
         tree.into_any_element()
+    }
+
+    /// The tree flattened to what is on screen: one entry per visible row,
+    /// with its depth. A note store can hold thousands of notes, and the old
+    /// recursion built an element for every one of them on every frame; the
+    /// flattened form feeds `uniform_list`, which lays out only the rows in
+    /// the viewport.
+    fn visible_tree_rows(
+        &self,
+        items: &[notes_core::NotesTreeItem],
+        depth: usize,
+        out: &mut Vec<(notes_core::NotesTreeItem, usize)>,
+    ) {
+        for item in items {
+            let expanded = self.expanded.contains(&item.full_path);
+            out.push((item.clone(), depth));
+            if item.is_folder && expanded {
+                self.visible_tree_rows(&item.children, depth + 1, out);
+            }
+        }
     }
 
     /// One row of the file tree: 34 px, the selected one lifted with the
     /// accent down its left edge, and a `changes` dot on notes with unsaved
     /// text.
-    fn render_tree_items(
+    fn render_tree_row(
         &mut self,
-        items: &[notes_core::NotesTreeItem],
+        item: &notes_core::NotesTreeItem,
         depth: usize,
+        index: usize,
+        editor_text: &str,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let editor_text = self.editor.read(cx).value();
-        let mut list = div().flex().flex_col();
-        for (index, item) in items.iter().enumerate() {
-            let expanded = self.expanded.contains(&item.full_path);
-            let selected = self.open_note.as_ref() == Some(&item.full_path);
-            let unsaved = self.dirty.contains_key(&item.full_path)
-                || (selected
-                    && !item.is_folder
-                    && editor_text.as_ref() != self.saved_text.as_str());
-            let id = gpui::ElementId::NamedInteger(
-                SharedString::from(format!("note-item-{}-{}", depth, item.name)),
-                index as u64,
-            );
-            let selector_name = item.name.clone();
-            let row = div()
-                .id(id)
-                .debug_selector(move || format!("note-item-{}", selector_name))
-                .a11y_tree_item(item.name.clone(), item.is_folder.then_some(expanded))
-                .relative()
-                .cursor_pointer()
-                .flex()
-                .items_center()
-                .min_h(px(theme::scaled(34.)))
-                .pl(px(10. + depth as f32 * 14.))
-                .pr_3()
-                .text_size(px(theme::font_row_meta()))
-                .when(selected, |d| {
-                    d.bg(theme::raised()).text_color(theme::text()).child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .bottom_0()
-                            .left_0()
-                            .w(px(3.))
-                            .bg(theme::accent()),
-                    )
-                })
-                .when(!selected, |d| d.text_color(theme::text_dim()))
-                .when(!selected, |d| d.hover(|s| s.bg(theme::panel())))
-                .on_click({
-                    let item = item.clone();
-                    cx.listener(move |this, _, window, cx| {
-                        if item.is_folder {
-                            if this.expanded.contains(&item.full_path) {
-                                this.expanded.remove(&item.full_path);
-                            } else {
-                                this.expanded.insert(item.full_path.clone());
-                            }
-                        } else {
-                            this.open_note(item.full_path.clone(), window, cx);
-                        }
-                        cx.notify();
-                    })
-                })
-                .child(
+        let expanded = self.expanded.contains(&item.full_path);
+        let selected = self.open_note.as_ref() == Some(&item.full_path);
+        let unsaved = self.dirty.contains_key(&item.full_path)
+            || (selected && !item.is_folder && editor_text != self.saved_text.as_str());
+        let id = gpui::ElementId::NamedInteger(
+            SharedString::from(format!("note-item-{}-{}", depth, item.name)),
+            index as u64,
+        );
+        let selector_name = item.name.clone();
+        div()
+            .id(id)
+            .debug_selector(move || format!("note-item-{}", selector_name))
+            .a11y_tree_item(item.name.clone(), item.is_folder.then_some(expanded))
+            .relative()
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .h(px(theme::scaled(TREE_ROW_HEIGHT)))
+            .pl(px(10. + depth as f32 * 14.))
+            .pr_3()
+            .text_size(px(theme::font_row_meta()))
+            .when(selected, |d| {
+                d.bg(theme::raised()).text_color(theme::text()).child(
                     div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_1()
-                        .min_w_0()
-                        .flex_1()
-                        .when(item.is_folder, |row| {
-                            row.child(icon(
-                                if expanded {
-                                    "icons/icon-chevron-down.svg"
-                                } else {
-                                    "icons/icon-chevron-right.svg"
-                                },
-                                px(theme::icon_tiny()),
-                                theme::text_faint(),
-                            ))
-                        })
-                        .child(if item.is_folder {
-                            icon(
-                                "icons/icon-folder.svg",
-                                px(theme::icon_tiny()),
-                                theme::text_muted(),
-                            )
-                        } else {
-                            icon(
-                                "icons/icon-note.svg",
-                                px(theme::icon_tiny()),
-                                theme::text_muted(),
-                            )
-                        })
-                        .child(div().truncate().min_w_0().child(item.name.clone())),
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left_0()
+                        .w(px(3.))
+                        .bg(theme::accent()),
                 )
-                .when(unsaved, |row| {
-                    row.child(
-                        div()
-                            .flex_shrink_0()
-                            .ml_1()
-                            .size(px(6.))
-                            .rounded_full()
-                            .bg(theme::CHANGES),
-                    )
-                });
-            list = list.child(row);
-            if item.is_folder && expanded {
-                list = list.child(self.render_tree_items(&item.children, depth + 1, cx));
-            }
-        }
-        list.into_any_element()
+            })
+            .when(!selected, |d| d.text_color(theme::text_dim()))
+            .when(!selected, |d| d.hover(|s| s.bg(theme::panel())))
+            .on_click({
+                let item = item.clone();
+                cx.listener(move |this, _, window, cx| {
+                    if item.is_folder {
+                        if this.expanded.contains(&item.full_path) {
+                            this.expanded.remove(&item.full_path);
+                        } else {
+                            this.expanded.insert(item.full_path.clone());
+                        }
+                    } else {
+                        this.open_note(item.full_path.clone(), window, cx);
+                    }
+                    cx.notify();
+                })
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .min_w_0()
+                    .flex_1()
+                    .when(item.is_folder, |row| {
+                        row.child(icon(
+                            if expanded {
+                                "icons/icon-chevron-down.svg"
+                            } else {
+                                "icons/icon-chevron-right.svg"
+                            },
+                            px(theme::icon_tiny()),
+                            theme::text_faint(),
+                        ))
+                    })
+                    .child(if item.is_folder {
+                        icon(
+                            "icons/icon-folder.svg",
+                            px(theme::icon_tiny()),
+                            theme::text_muted(),
+                        )
+                    } else {
+                        icon(
+                            "icons/icon-note.svg",
+                            px(theme::icon_tiny()),
+                            theme::text_muted(),
+                        )
+                    })
+                    .child(div().truncate().min_w_0().child(item.name.clone())),
+            )
+            .when(unsaved, |row| {
+                row.child(
+                    div()
+                        .flex_shrink_0()
+                        .ml_1()
+                        .size(px(6.))
+                        .rounded_full()
+                        .bg(theme::CHANGES),
+                )
+            })
+            .into_any_element()
+    }
+
+    /// The virtualized tree: `uniform_list` renders only the rows the viewport
+    /// shows, so a large store costs the same as a small one.
+    fn render_tree_list(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let mut rows = Vec::new();
+        let tree = self.tree.clone();
+        self.visible_tree_rows(&tree, 0, &mut rows);
+        let editor_text = self.editor.read(cx).value().to_string();
+        let count = rows.len();
+        uniform_list(
+            SharedString::from("notes-tree-rows"),
+            count,
+            cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+                range
+                    .map(|index| {
+                        let (item, depth) = rows[index].clone();
+                        this.render_tree_row(&item, depth, index, &editor_text, cx)
+                    })
+                    .collect()
+            }),
+        )
+        .flex_1()
+        .min_h_0()
+        .w_full()
+        .debug_selector(|| "notes-tree-rows".into())
+        .into_any_element()
     }
 
     /// The editor's head: the file name in mono, the unsaved mark, Save, and
