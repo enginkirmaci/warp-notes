@@ -1377,6 +1377,7 @@ impl NotesPage {
             });
 
         if !term.trim().is_empty() {
+            let count = self.search_hits.len();
             let mut hits = div()
                 .id("notes-hits")
                 .flex()
@@ -1384,7 +1385,20 @@ impl NotesPage {
                 .pt_1()
                 .px_2()
                 .gap_0p5()
-                .overflow_y_scroll();
+                .overflow_y_scroll()
+                // the count heads the results, or the pane says there are none
+                .child(
+                    div()
+                        .px_2()
+                        .py_1p5()
+                        .text_size(px(theme::font_meta()))
+                        .text_color(theme::TEXT_FAINT)
+                        .child(if count == 0 {
+                            "No matches.".to_string()
+                        } else {
+                            format!("{count} {}", if count == 1 { "note" } else { "notes" })
+                        }),
+                );
             for (index, hit) in self.search_hits.iter().enumerate() {
                 hits = hits.child(
                     div()
