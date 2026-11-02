@@ -1155,7 +1155,7 @@ impl NotesPage {
                     .rounded(px(6.))
                     .bg(theme::accent_soft())
                     .child(icon(
-                        "icons/icon-note.svg",
+                        "icons/logo.svg",
                         px(theme::icon_small()),
                         theme::accent_ink(),
                     )),
@@ -1316,7 +1316,10 @@ impl NotesPage {
                             _ => {}
                         }
                     }))
-                    .child(Input::new(&self.find).with_size(theme::field_size())),
+                    .child(warpui_kit_core::shell::field(
+                        "field-find",
+                        Input::new(&self.find).with_size(theme::field_size()),
+                    )),
             )
             .child(
                 div()
@@ -1486,7 +1489,8 @@ impl NotesPage {
                                 cx.notify();
                             }
                         }))
-                        .child(
+                        .child(warpui_kit_core::shell::field(
+                            "field-search",
                             Input::new(&self.search)
                                 .with_size(theme::field_size())
                                 .cleanable(true)
@@ -1495,7 +1499,7 @@ impl NotesPage {
                                     px(theme::icon_small() - 1.),
                                     theme::text_faint(),
                                 )),
-                        ),
+                        )),
                 ),
             )
             // inline "new note" form, stacked for the narrow column
@@ -1508,8 +1512,14 @@ impl NotesPage {
                         .gap_1()
                         .pt_2()
                         .px_3()
-                        .child(Input::new(&self.create_name).with_size(theme::field_size()))
-                        .child(Input::new(&self.create_folder).with_size(theme::field_size()))
+                        .child(warpui_kit_core::shell::field(
+                            "field-create_name",
+                            Input::new(&self.create_name).with_size(theme::field_size()),
+                        ))
+                        .child(warpui_kit_core::shell::field(
+                            "field-create_folder",
+                            Input::new(&self.create_folder).with_size(theme::field_size()),
+                        ))
                         .child(
                             div()
                                 .flex()

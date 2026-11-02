@@ -1,16 +1,4 @@
-<!--
-	WarpNotes brand mark: a note document with a folded corner on the family
-	dark tile. Geometry derived from the in-app icon-note glyph
-	(MDI file-document), scaled onto a 128px tile. Fill: the family accent.
--->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
-	<rect x="4" y="4" width="120" height="120" rx="28" fill="#1C1D20"/>
-	<rect x="4" y="4" width="120" height="120" rx="28" fill="none" stroke="#3A3B42" stroke-width="2"/>
-	<g transform="translate(28 28)">
-		<path d="M56 8H24A8 8 0 0 0 16 16V72A8 8 0 0 0 24 80H64A8 8 0 0 0 72 72V24Z"
-			fill="#7090CF"/>
-		<path d="M56 8 72 24H56Z" fill="#1C1D20"/>
-		<rect x="30" y="44" width="28" height="6" rx="3" fill="#1C1D20"/>
-		<rect x="30" y="56" width="28" height="6" rx="3" fill="#1C1D20"/>
-	</g>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="Warp Notes">
+  <rect width="128" height="128" rx="28" fill="#6B6157"/>
+  <path fill="#F5EFE4" fill-rule="evenodd" d="M40 40a6 6 0 0 1 6-6h30l12 12v42a6 6 0 0 1-6 6H46a6 6 0 0 1-6-6Z M52.5 60h21a2.5 2.5 0 0 1 2.5 2.5a2.5 2.5 0 0 1-2.5 2.5h-21a2.5 2.5 0 0 1-2.5-2.5a2.5 2.5 0 0 1 2.5-2.5Z M52.5 71h13a2.5 2.5 0 0 1 2.5 2.5a2.5 2.5 0 0 1-2.5 2.5h-13a2.5 2.5 0 0 1-2.5-2.5a2.5 2.5 0 0 1 2.5-2.5Z"/>
 </svg>
