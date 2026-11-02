@@ -8,6 +8,9 @@ from DevTools into its own repo. Rust/GPUI (gpui-kit 0.7), one crate.
 
 - One notes store on disk: `~/.warp/notes`, one subfolder per repository.
   A legacy `~/.devtools/notes` store is renamed over on first run.
+- The family shell: a rail (Notes, Settings), the note tree in the list pane and
+  one live editor in the detail pane; Settings holds the store path, the shared
+  text size, the Copper palette/typeface and reduce motion.
 - Folder/file tree, capped full-text search, dirty-buffer-safe navigation.
 - A single live editor that works like Obsidian's live preview: markdown
   renders in place while typing with its syntax hidden until the caret touches
