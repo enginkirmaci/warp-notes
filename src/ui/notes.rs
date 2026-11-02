@@ -1224,7 +1224,7 @@ impl NotesPage {
             })
             .child(crate::ui::window_button(
                 "notes-launch-station",
-                "icons/icon-code.svg",
+                "icons/logo-station.svg",
                 theme::raised().into(),
                 "Open Warp Station",
                 SHOW_TOOLTIPS,
