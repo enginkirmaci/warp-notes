@@ -1220,7 +1220,7 @@ impl NotesPage {
     /// then the window controls.
     fn render_titlebar(&mut self, window: &Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         shell::title_bar()
-            .pl(px(14.))
+            .px(px(14.))
             // the whole bar drags; the window buttons occlude it from the
             // Windows hit test and stop the press so they stay clickable
             .window_control_area(WindowControlArea::Drag)
@@ -1252,86 +1252,98 @@ impl NotesPage {
             .on_mouse_down_out(cx.listener(|this, _, _, _| {
                 this.titlebar_should_move = false;
             }))
+            // the left column: the app's own mark and name, then the family's
+            // link and the scope chip. It is ONE flexible column so the search
+            // field between it and the window controls lands on the window's
+            // centre; the right side's flexible spacer does the balancing.
             .child(
                 div()
-                    .flex_shrink_0()
+                    .debug_selector(|| "notes-titlebar-left".into())
+                    .flex_1()
+                    .min_w_0()
                     .flex()
                     .items_center()
-                    .justify_center()
-                    .size(px(28.))
-                    .rounded(px(6.))
-                    .bg(theme::accent_soft())
-                    .child(icon(
-                        "icons/logo.svg",
-                        px(theme::icon_small()),
-                        theme::accent_ink(),
-                    )),
-            )
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .text_size(px(theme::font_brand()))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme::text())
-                    .whitespace_nowrap()
-                    .child("Warp Notes"),
-            )
-            // the family: the sibling apps this window can open, right after
-            // its own mark and name, behind one separator
-            .child(
-                shell::app_links().child(
-                    shell::app_link(
-                        "notes-launch-station",
-                        "icons/logo-station.svg",
-                        "Open Warp Station",
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .size(px(28.))
+                            .rounded(px(6.))
+                            .bg(theme::accent_soft())
+                            .child(icon(
+                                "icons/logo.svg",
+                                px(theme::icon_small()),
+                                theme::accent_ink(),
+                            )),
                     )
-                    .on_click(|_, _, _| {
-                        if let Err(err) = std::process::Command::new("warp-station").spawn() {
-                            tracing::warn!("could not launch warp-station: {err}");
-                        }
-                    })
-                    .when(SHOW_TOOLTIPS, |d| {
-                        d.tooltip(crate::ui::tooltip_text("Open Warp Station"))
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_size(px(theme::font_brand()))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme::text())
+                            .whitespace_nowrap()
+                            .child("Warp Notes"),
+                    )
+                    // the family: the sibling apps this window can open, right
+                    // after its own mark and name, behind one separator
+                    .child(
+                        shell::app_links().child(
+                            shell::app_link(
+                                "notes-launch-station",
+                                "icons/logo-station.svg",
+                                "Open Warp Station",
+                            )
+                            .on_click(|_, _, _| {
+                                if let Err(err) = std::process::Command::new("warp-station").spawn()
+                                {
+                                    tracing::warn!("could not launch warp-station: {err}");
+                                }
+                            })
+                            .when(SHOW_TOOLTIPS, |d| {
+                                d.tooltip(crate::ui::tooltip_text("Open Warp Station"))
+                            }),
+                        ),
+                    )
+                    .when_some(self.notes_scope.clone(), |row, repo| {
+                        row.child(
+                            div()
+                                .id("notes-scope-chip")
+                                .h(px(24.))
+                                .px_2p5()
+                                .rounded(px(6.))
+                                .bg(theme::raised())
+                                .flex()
+                                .items_center()
+                                .text_size(px(theme::font_meta()))
+                                .text_color(theme::text_dim())
+                                .whitespace_nowrap()
+                                .overflow_hidden()
+                                .max_w(px(220.))
+                                .child(repo),
+                        )
+                        // up out of the repo's notes folder to the whole store
+                        // (one folder per repo)
+                        .child(crate::ui::window_button(
+                            "notes-up-dir",
+                            "icons/icon-arrow-up.svg",
+                            theme::raised().into(),
+                            "Up to all repositories' notes",
+                            SHOW_TOOLTIPS,
+                            cx.listener(|this, _, _, cx| {
+                                this.notes_scope = None;
+                                this.expanded.clear();
+                                cx.notify();
+                            }),
+                        ))
                     }),
-                ),
             )
-            .when_some(self.notes_scope.clone(), |row, repo| {
-                row.child(
-                    div()
-                        .id("notes-scope-chip")
-                        .h(px(24.))
-                        .px_2p5()
-                        .rounded(px(6.))
-                        .bg(theme::raised())
-                        .flex()
-                        .items_center()
-                        .text_size(px(theme::font_meta()))
-                        .text_color(theme::text_dim())
-                        .whitespace_nowrap()
-                        .overflow_hidden()
-                        .max_w(px(220.))
-                        .child(repo),
-                )
-                // up out of the repo's notes folder to the whole store
-                // (one folder per repo)
-                .child(crate::ui::window_button(
-                    "notes-up-dir",
-                    "icons/icon-arrow-up.svg",
-                    theme::raised().into(),
-                    "Up to all repositories' notes",
-                    SHOW_TOOLTIPS,
-                    cx.listener(|this, _, _, cx| {
-                        this.notes_scope = None;
-                        this.expanded.clear();
-                        cx.notify();
-                    }),
-                ))
-            })
             // search: the app's one search field, in the title bar over the
-            // list it searches. The spacers keep it clear of the brand on one
-            // side and the window controls on the other; it is not centred on
-            // the window, which is why the popup reads its painted box.
-            .child(div().flex_1().h_full())
+            // list it searches. The left column is flexible and the spacer on
+            // its right balances it, so the field lands on the window's centre.
             .child({
                 let box_slot = self.search_field_box.clone();
                 div()
@@ -1396,62 +1408,74 @@ impl NotesPage {
                         )),
                     )
             })
-            .child(div().flex_1().h_full())
-            .when(self.section == Section::Notes, |row| {
-                row.child(crate::ui::window_button(
-                    "notes-list-toggle",
-                    "icons/icon-panel-left.svg",
-                    theme::raised().into(),
-                    if self.list_visible {
-                        "Hide list"
-                    } else {
-                        "Show list"
-                    },
-                    SHOW_TOOLTIPS,
-                    cx.listener(|this, _, _, cx| {
-                        this.list_visible = !this.list_visible;
-                        cx.notify();
-                    }),
-                ))
-            })
-            .child(div().w(px(1.)).h(px(20.)).mx_1().bg(theme::hairline()))
-            .child(crate::ui::window_button(
-                "notes-minimize",
-                "icons/icon-window-minimize.svg",
-                theme::raised().into(),
-                "Minimize",
-                SHOW_TOOLTIPS,
-                |_, window, _| window.minimize_window(),
-            ))
-            .child(crate::ui::window_button(
-                "notes-zoom",
-                if window.is_maximized() {
-                    "icons/icon-window-restore.svg"
-                } else {
-                    "icons/icon-window-maximize.svg"
-                },
-                theme::raised().into(),
-                if window.is_maximized() {
-                    "Restore"
-                } else {
-                    "Maximize"
-                },
-                SHOW_TOOLTIPS,
-                cx.listener(|_, _, window, cx| {
-                    window.zoom_window();
-                    // the compositor toggles asynchronously — nudge a
-                    // re-render so the maximize/restore glyph keeps up
-                    cx.notify();
-                }),
-            ))
-            .child(crate::ui::window_button(
-                "notes-close",
-                "icons/icon-window-close.svg",
-                theme::tint(theme::DANGER),
-                "Close",
-                SHOW_TOOLTIPS,
-                |_, window, _| window.remove_window(),
-            ))
+            // the right column: the list toggle, then the window controls. It
+            // is flexible and right-aligned so it balances the left column and
+            // the search field between them sits on the window's centre.
+            .child(
+                div()
+                    .debug_selector(|| "notes-titlebar-right".into())
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .gap_1()
+                    .when(self.section == Section::Notes, |row| {
+                        row.child(crate::ui::window_button(
+                            "notes-list-toggle",
+                            "icons/icon-panel-left.svg",
+                            theme::raised().into(),
+                            if self.list_visible {
+                                "Hide list"
+                            } else {
+                                "Show list"
+                            },
+                            SHOW_TOOLTIPS,
+                            cx.listener(|this, _, _, cx| {
+                                this.list_visible = !this.list_visible;
+                                cx.notify();
+                            }),
+                        ))
+                    })
+                    .child(div().w(px(1.)).h(px(20.)).mx_1().bg(theme::hairline()))
+                    .child(crate::ui::window_button(
+                        "notes-minimize",
+                        "icons/icon-window-minimize.svg",
+                        theme::raised().into(),
+                        "Minimize",
+                        SHOW_TOOLTIPS,
+                        |_, window, _| window.minimize_window(),
+                    ))
+                    .child(crate::ui::window_button(
+                        "notes-zoom",
+                        if window.is_maximized() {
+                            "icons/icon-window-restore.svg"
+                        } else {
+                            "icons/icon-window-maximize.svg"
+                        },
+                        theme::raised().into(),
+                        if window.is_maximized() {
+                            "Restore"
+                        } else {
+                            "Maximize"
+                        },
+                        SHOW_TOOLTIPS,
+                        cx.listener(|_, _, window, cx| {
+                            window.zoom_window();
+                            // the compositor toggles asynchronously — nudge a
+                            // re-render so the maximize/restore glyph keeps up
+                            cx.notify();
+                        }),
+                    ))
+                    .child(crate::ui::window_button(
+                        "notes-close",
+                        "icons/icon-window-close.svg",
+                        theme::tint(theme::DANGER),
+                        "Close",
+                        SHOW_TOOLTIPS,
+                        |_, window, _| window.remove_window(),
+                    )),
+            )
             .into_any_element()
     }
 

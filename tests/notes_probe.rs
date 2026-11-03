@@ -761,9 +761,14 @@ fn search_sits_in_the_titlebar_and_caps_its_popup(cx: &mut TestAppContext) {
     cx.update(|window, cx| drop(window.draw(cx)));
 
     // the search field is in the title bar, and the list pane has none
+    let field = bounds(cx, "notes-search-field").expect("the search field is in the title bar");
+    // the design puts it centred: two flexible columns, the field between them
+    let window_centre = cx.update(|window, _| window.viewport_size().width) / 2.;
+    let field_centre = field.origin.x + field.size.width / 2.;
     assert!(
-        bounds(cx, "notes-search-field").is_some(),
-        "the search field is in the title bar",
+        (field_centre - window_centre).abs() < px(2.),
+        "the search field sits on the window's centre \
+         (field centre {field_centre:?}, window centre {window_centre:?})",
     );
     assert!(
         bounds(cx, "field-search").is_none(),
