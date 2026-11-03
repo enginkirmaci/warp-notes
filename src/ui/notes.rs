@@ -13,11 +13,10 @@ use crate::ui::settings::SettingsSection;
 use crate::ui_prefs::UiPrefs;
 use gpui::prelude::*;
 use gpui::{
-    App, Context, Entity, FontWeight, MouseButton, Pixels, SharedString, WeakEntity, Window,
-    WindowControlArea, canvas, div, px, uniform_list,
+    App, Context, Entity, Focusable as _, FontWeight, MouseButton, Pixels, SharedString,
+    WeakEntity, Window, WindowControlArea, canvas, div, px, uniform_list,
 };
-use gpui_kit::component::Sizable as _;
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{InputEvent, InputState};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -1009,7 +1008,7 @@ impl NotesPage {
                 let mut panes = shell::panes();
                 if self.list_visible {
                     panes = panes
-                        .child(self.render_tree(cx))
+                        .child(self.render_tree(window, cx))
                         .child(self.render_splitter(cx));
                 }
                 panes
@@ -1035,7 +1034,7 @@ impl NotesPage {
                                     )
                                 })
                                 .when(self.find_open, |column| {
-                                    column.child(self.render_find_bar(cx))
+                                    column.child(self.render_find_bar(window, cx))
                                 })
                                 .child(self.render_editor(cx))
                                 .when(self.open_note.is_some(), |column| {
@@ -1368,30 +1367,19 @@ impl NotesPage {
                         .size_full(),
                     )
                     .child(
-                        warpui_kit_core::shell::field(
+                        warpui_kit_core::field::boxed(
                             "notes-search-field",
-                            Input::new(&self.search)
-                                .with_size(theme::field_size())
-                                .cleanable(true)
-                                .prefix(icon(
-                                    "icons/icon-search.svg",
-                                    px(theme::icon_small()),
-                                    theme::text_muted(),
-                                ))
-                                .suffix(
-                                    div()
-                                        .flex_shrink_0()
-                                        .rounded(px(4.))
-                                        .border_1()
-                                        .border_color(theme::line_strong())
-                                        .mx_1()
-                                        .px_1p5()
-                                        .font_family(theme::code_font())
-                                        .text_size(px(theme::font_micro()))
-                                        .text_color(theme::text_dim())
-                                        .child("Ctrl K"),
-                                ),
+                            &self.search.read(cx).focus_handle(cx),
+                            window,
+                            warpui_kit_core::field::title_height(),
                         )
+                        .child(icon(
+                            "icons/icon-search.svg",
+                            px(theme::icon_small()),
+                            theme::text_muted(),
+                        ))
+                        .child(warpui_kit_core::field::input(&self.search).cleanable(true))
+                        .child(warpui_kit_core::field::kbd("Ctrl K"))
                         // the results hang under the field, so the keyboard
                         // belongs to the search while it has text
                         .on_key_down(cx.listener(
@@ -1482,7 +1470,7 @@ impl NotesPage {
     /// The find bar: the term, the match count, Enter/Shift+Enter to walk the
     /// matches, Escape or × to close. It keeps the keyboard, so the editor's
     /// selection marks the match without stealing the typing.
-    fn render_find_bar(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_find_bar(&mut self, window: &Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let count = self.find_hits.len();
         let counter = if count == 0 {
             "No matches".to_string()
@@ -1523,9 +1511,11 @@ impl NotesPage {
                             _ => {}
                         }
                     }))
-                    .child(warpui_kit_core::shell::field(
+                    .child(warpui_kit_core::field::text(
                         "field-find",
-                        Input::new(&self.find).with_size(theme::field_size()),
+                        &self.find,
+                        window,
+                        cx,
                     )),
             )
             .child(
@@ -1624,7 +1614,7 @@ impl NotesPage {
     /// The list pane: the tree tools over the tree, on the shell's list
     /// surface. Search does not replace the tree — its results are the title
     /// bar's popup — so the list keeps its scroll and selection while typing.
-    fn render_tree(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_tree(&mut self, window: &Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let can_create = self.notes_scope.is_some() || !self.tree.is_empty();
         let mut tree = shell::list_pane(self.prefs.list_width)
             .id("notes-sidebar")
@@ -1705,13 +1695,17 @@ impl NotesPage {
                         .gap_1()
                         .pt_2()
                         .px_3()
-                        .child(warpui_kit_core::shell::field(
+                        .child(warpui_kit_core::field::text(
                             "field-create_name",
-                            Input::new(&self.create_name).with_size(theme::field_size()),
+                            &self.create_name,
+                            window,
+                            cx,
                         ))
-                        .child(warpui_kit_core::shell::field(
+                        .child(warpui_kit_core::field::text(
                             "field-create_folder",
-                            Input::new(&self.create_folder).with_size(theme::field_size()),
+                            &self.create_folder,
+                            window,
+                            cx,
                         ))
                         .child(
                             div()
@@ -2287,9 +2281,14 @@ impl NotesPage {
                             .gap_1p5()
                             .text_size(px(theme::font_control()))
                             .font_weight(FontWeight::MEDIUM)
+                            // the design's plain button: panel fill, control
+                            // border — the accent outline was this app's own
+                            // invention, and the empty state's one primary is
+                            // the New note control in the tree above it
                             .border_1()
-                            .border_color(theme::accent_ink())
-                            .text_color(theme::accent_ink())
+                            .border_color(theme::line_strong())
+                            .bg(theme::panel())
+                            .text_color(theme::text())
                             .hover(|s| s.bg(theme::raised()))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.create_open = true;
@@ -2300,7 +2299,7 @@ impl NotesPage {
                             .child(icon(
                                 "icons/icon-plus.svg",
                                 px(theme::icon_small() - 2.),
-                                theme::accent_ink(),
+                                theme::text_dim(),
                             ))
                             .child("New note"),
                     )

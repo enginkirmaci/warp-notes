@@ -10,7 +10,7 @@ use crate::ui::A11y;
 use crate::ui::notes::NotesPage;
 use gpui::prelude::*;
 use gpui::{Context, FontWeight, SharedString, Window, div, px};
-use gpui_kit::component::switch::Switch;
+use warpui_kit_core::settings as kit;
 use warpui_kit_core::shell;
 
 /// The Settings section's own sections, in list order.
@@ -120,25 +120,12 @@ impl NotesPage {
                     ),
             );
 
-        let cards = match active {
-            SettingsSection::General => vec![self.store_card(), self.text_card()],
+        let rows = match active {
+            SettingsSection::General => vec![self.store_row(), self.text_row()],
             SettingsSection::Appearance => {
-                vec![
-                    self.palette_card(),
-                    self.typeface_card(),
-                    self.motion_card(cx),
-                ]
+                vec![self.palette_row(), self.typeface_row(), self.motion_row(cx)]
             }
         };
-        let mut column = div()
-            .w_full()
-            .max_w(px(shell::READING_WIDTH))
-            .flex()
-            .flex_col()
-            .gap_3();
-        for card in cards {
-            column = column.child(card);
-        }
 
         shell::panes()
             .child(list)
@@ -153,100 +140,86 @@ impl NotesPage {
                             .min_h_0()
                             .overflow_y_scroll()
                             .p(px(shell::DETAIL_PADDING))
-                            .child(column),
+                            .child(
+                                // the design's `.measure`: rows, not cards
+                                div()
+                                    .w_full()
+                                    .min_w_0()
+                                    .max_w(px(shell::READING_WIDTH))
+                                    .child(kit::rows(rows)),
+                            ),
                     ),
             )
             .into_any_element()
     }
 
-    fn store_card(&mut self) -> gpui::AnyElement {
-        card("Store")
-            .child(setting_row(
-                "Notes store",
-                div()
-                    .min_w_0()
-                    .max_w(px(360.))
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    .font_family(SharedString::from(theme::code_font()))
-                    .text_size(px(theme::font_mono_meta()))
-                    .text_color(theme::text_dim())
-                    .child(SharedString::from(self.store_root.display().to_string())),
-            ))
-            .child(caption(
-                "One subfolder per repository. Warp Station passes its notes_store_path here.",
-            ))
-            .into_any_element()
+    fn store_row(&mut self) -> gpui::AnyElement {
+        kit::row_with_desc(
+            "settings-row-Store",
+            "Notes store",
+            "One subfolder per repository. Warp Station passes its notes_store_path here.",
+            div()
+                .min_w_0()
+                .max_w(px(360.))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .font_family(SharedString::from(theme::code_font()))
+                .text_size(px(theme::font_mono_meta()))
+                .text_color(theme::text_dim())
+                .child(SharedString::from(self.store_root.display().to_string())),
+            true,
+        )
     }
 
-    fn text_card(&mut self) -> gpui::AnyElement {
-        card("Text")
-            .child(setting_row(
-                "Text size",
-                warpui_kit_core::text_size_control(),
-            ))
-            .child(caption(
-                "Applied right away. The other Warp apps follow when they next open.",
-            ))
-            .into_any_element()
+    fn text_row(&mut self) -> gpui::AnyElement {
+        kit::row_with_desc(
+            "settings-row-Text size",
+            "Text size",
+            "Applied right away. The other Warp apps follow when they next open.",
+            warpui_kit_core::text_size_control(),
+            false,
+        )
     }
 
-    fn palette_card(&mut self) -> gpui::AnyElement {
+    fn palette_row(&mut self) -> gpui::AnyElement {
         // the live picker, the same one the other apps carry: a click applies
         // in this app at once and the others follow on their next start
-        card("Palette")
-            .child(setting_row("Palette", warpui_kit_core::palette_control()))
-            .child(caption(
-                "Applied right away. The other Warp apps follow when they next open.",
-            ))
-            .into_any_element()
+        kit::row_with_desc(
+            "settings-row-Palette",
+            "Palette",
+            "Shared by every app in the suite",
+            warpui_kit_core::palette_control(),
+            true,
+        )
     }
 
-    fn typeface_card(&mut self) -> gpui::AnyElement {
-        card("Typeface")
-            .child(setting_row(
-                "Typeface",
-                div()
-                    .text_size(px(theme::font_body()))
-                    .text_color(theme::text())
-                    .child("Inter + JetBrains Mono"),
-            ))
-            .child(caption(
-                "The family's two faces, bundled with the app. Code, paths and note names set in mono.",
-            ))
-            .into_any_element()
+    fn typeface_row(&mut self) -> gpui::AnyElement {
+        kit::row_with_desc(
+            "settings-row-Typeface",
+            "Typeface",
+            "Interface and code fonts",
+            div()
+                .text_size(px(theme::font_body()))
+                .text_color(theme::text())
+                .child("Inter + JetBrains Mono"),
+            false,
+        )
     }
 
-    fn motion_card(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn motion_row(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let reduced = self.prefs.reduce_motion;
-        card("Motion")
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .min_h(px(shell::scaled(60.)))
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(px(theme::font_body()))
-                            .text_color(theme::text())
-                            .child("Reduce motion"),
-                    )
-                    .child(
-                        Switch::new(SharedString::from("switch-reduce-motion"))
-                            .checked(reduced)
-                            .accessibility_label("Reduce motion")
-                            .on_click(cx.listener(|this, _on: &bool, _window, cx| {
-                                this.set_reduce_motion(!this.prefs.reduce_motion, cx);
-                            })),
-                    ),
-            )
-            .child(caption(
-                "Turns animation off, spinners included. The busy words stay.",
-            ))
-            .into_any_element()
+        kit::switch_row_with_desc(
+            "switch-reduce-motion",
+            "Reduce motion",
+            "settings-row-Reduce motion",
+            "Turns off transitions and keeps spinners still. Busy labels stay",
+            reduced,
+            false,
+            cx.listener(|this, _on: &bool, _window, cx| {
+                this.set_reduce_motion(!this.prefs.reduce_motion, cx);
+            }),
+        )
     }
 
     /// The motion choice applies at once and lands in the prefs file.
@@ -259,48 +232,4 @@ impl NotesPage {
         cx.refresh_windows();
         cx.notify();
     }
-}
-
-/// One settings card: a base card on the detail pane, its heading and rows.
-fn card(title: &str) -> gpui::Div {
-    div()
-        .rounded(px(8.))
-        .border_1()
-        .border_color(theme::hairline())
-        .bg(theme::surface())
-        .p_4()
-        .flex()
-        .flex_col()
-        .gap_2p5()
-        .child(
-            div()
-                .text_size(px(theme::font_heading()))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme::text())
-                .child(SharedString::from(title)),
-        )
-}
-
-/// One setting: the label left, the control right, 60 high.
-fn setting_row(label: &str, control: impl gpui::IntoElement) -> gpui::Div {
-    div()
-        .flex()
-        .items_center()
-        .gap_3()
-        .min_h(px(shell::scaled(60.)))
-        .child(
-            div()
-                .flex_1()
-                .text_size(px(theme::font_body()))
-                .text_color(theme::text())
-                .child(SharedString::from(label)),
-        )
-        .child(control)
-}
-
-fn caption(text: &str) -> gpui::Div {
-    div()
-        .text_size(px(theme::font_meta()))
-        .text_color(theme::text_faint())
-        .child(SharedString::from(text))
 }
