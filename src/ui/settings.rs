@@ -193,23 +193,12 @@ impl NotesPage {
     }
 
     fn palette_card(&mut self) -> gpui::AnyElement {
+        // the live picker, the same one the other apps carry: a click applies
+        // in this app at once and the others follow on their next start
         card("Palette")
-            .child(setting_row(
-                "Palette",
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(div().size(px(14.)).rounded(px(3.)).bg(theme::accent()))
-                    .child(
-                        div()
-                            .text_size(px(theme::font_body()))
-                            .text_color(theme::text())
-                            .child("Copper"),
-                    ),
-            ))
+            .child(setting_row("Palette", warpui_kit_core::palette_control()))
             .child(caption(
-                "Copper is the family palette; the prototype's Plum and Pine are comparisons only.",
+                "Applied right away. The other Warp apps follow when they next open.",
             ))
             .into_any_element()
     }
