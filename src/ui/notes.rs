@@ -59,6 +59,10 @@ struct Notice {
     kind: NoticeKind,
     text: String,
     expires: std::time::Instant,
+    /// A counter that moves with every new toast: the entrance animation keys
+    /// on it, so a second toast plays its own entrance instead of inheriting
+    /// the first one's finished animation (which reads as "no animation").
+    seq: u64,
 }
 
 /// An info toast leaves on its own; an error stays longer and carries a close.
@@ -74,7 +78,24 @@ fn notice_ttl(kind: NoticeKind) -> std::time::Duration {
 /// One tree row: fixed, so `uniform_list` can size the whole list.
 const TREE_ROW_HEIGHT: f32 = 34.;
 
+/// The title bar's search field: the design's `min(460px, 36vw)` measure,
+/// fixed so the popup under it can line up with its edges.
+const SEARCH_W: f32 = 460.;
+
+/// How many results the popup lists before it says how many are left. A popup
+/// is a glance; the tree is the way to everything.
+const SEARCH_POPUP_ROWS: usize = 8;
+
 const SHOW_TOOLTIPS: bool = true;
+
+/// What the status bar counts over the open note. Computed once per document
+/// revision, not once per frame: the scan is the length of the note.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct TextStats {
+    words: usize,
+    chars: usize,
+    lines: usize,
+}
 
 pub struct NotesPage {
     /// The notes store root: --store when given, else ~/.warp/notes.
@@ -97,7 +118,7 @@ pub struct NotesPage {
     splitter_drag: Rc<Cell<Option<(Pixels, f32)>>>,
     /// The loaded tree behind an Rc: every editor keystroke re-renders the
     /// page, and the rebuild must not deep-clone the whole tree per frame.
-    tree: Rc<Vec<notes_core::NotesTreeItem>>,
+    tree: Rc<Vec<Rc<notes_core::NotesTreeItem>>>,
     tree_loaded_for: Option<PathBuf>,
     /// The tree changed: the editor's wikilinks need the new note names.
     note_names_stale: bool,
@@ -108,6 +129,18 @@ pub struct NotesPage {
     /// The on-disk contents of the open note; comparing against the editor
     /// makes the unsaved marker follow every keystroke.
     saved_text: String,
+    /// The status bar's word/char/line counts and the editor revision they
+    /// were computed from: the scan is the length of the note, and the bar
+    /// re-renders on every caret move.
+    text_stats: TextStats,
+    stats_revision: Option<u64>,
+    /// The head's "Edited 5m" label and when it was read: a `stat` syscall
+    /// per frame is not worth a string that changes once a minute.
+    age_cache: Option<(PathBuf, String, std::time::Instant)>,
+    /// The title bar search field's painted box (x, width), captured during
+    /// paint: the results popup hangs off it, and the field is not at the
+    /// window's centre (the brand and app links sit to its left).
+    search_field_box: Rc<Cell<Option<(f32, f32)>>>,
     search: Entity<InputState>,
     search_hits: Vec<notes_core::NotesSearchHit>,
     /// Debounce sequence; a keystroke invalidates any in-flight search.
@@ -127,6 +160,8 @@ pub struct NotesPage {
     create_folder: Entity<InputState>,
     /// The transient toast: save/create/delete outcomes, bottom right.
     notice: Option<Notice>,
+    /// The next toast's sequence number.
+    notice_seq: u64,
     /// A left press landed on the titlebar background; the first move turns
     /// it into a window drag (Linux/macOS — Windows uses the HTCAPTION path).
     titlebar_should_move: bool,
@@ -199,6 +234,10 @@ impl NotesPage {
             open_note: None,
             dirty: HashMap::new(),
             saved_text: String::new(),
+            text_stats: TextStats::default(),
+            stats_revision: None,
+            age_cache: None,
+            search_field_box: Rc::new(Cell::new(None)),
             search,
             search_hits: Vec::new(),
             search_generation: 0,
@@ -212,6 +251,7 @@ impl NotesPage {
             create_name,
             create_folder,
             notice: None,
+            notice_seq: 0,
             titlebar_should_move: false,
         };
         // --note: the requested note opens right away, tree expanded to it.
@@ -509,10 +549,12 @@ impl NotesPage {
     fn notice(&mut self, cx: &mut Context<Self>, kind: NoticeKind, text: &str) {
         let ttl = notice_ttl(kind);
         let expires = std::time::Instant::now() + ttl;
+        self.notice_seq += 1;
         self.notice = Some(Notice {
             kind,
             text: text.to_string(),
             expires,
+            seq: self.notice_seq,
         });
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(ttl).await;
@@ -651,6 +693,41 @@ impl NotesPage {
             && self.editor.read(cx).value().as_ref() != self.saved_text.as_str()
     }
 
+    /// The search field — for headless probes (typing a term).
+    #[doc(hidden)]
+    pub fn search_handle(&self) -> &Entity<InputState> {
+        &self.search
+    }
+
+    /// Runs the page's search synchronously — for headless probes, which
+    /// cannot wait out the field's 180 ms debounce on a real timer.
+    #[doc(hidden)]
+    pub fn run_search_for_probe(&mut self, term: String, cx: &mut Context<Self>) {
+        self.search_hits = self
+            .notes_root()
+            .map(|root| notes_core::search(&root, &term))
+            .unwrap_or_default();
+        cx.notify();
+    }
+
+    /// How many results the last search produced — for headless probes.
+    #[doc(hidden)]
+    pub fn search_hit_count(&self, _cx: &gpui::App) -> usize {
+        self.search_hits.len()
+    }
+
+    /// The status bar's counts and the revision they were computed from — for
+    /// headless probes (the cache must not recompute per frame).
+    #[doc(hidden)]
+    pub fn text_stats(&self) -> (usize, usize, usize, Option<u64>) {
+        (
+            self.text_stats.words,
+            self.text_stats.chars,
+            self.text_stats.lines,
+            self.stats_revision,
+        )
+    }
+
     /// The editor entity — for headless probes (caret, layout hit-testing).
     #[doc(hidden)]
     pub fn editor_handle(&self) -> &Entity<LiveEditorState> {
@@ -663,7 +740,7 @@ fn byte_to_char(text: &str, byte: usize) -> usize {
 }
 
 /// Every note's file name in the tree.
-fn collect_note_names(items: &[notes_core::NotesTreeItem], names: &mut Vec<String>) {
+fn collect_note_names(items: &[Rc<notes_core::NotesTreeItem>], names: &mut Vec<String>) {
     for item in items {
         if item.is_folder {
             collect_note_names(&item.children, names);
@@ -675,7 +752,7 @@ fn collect_note_names(items: &[notes_core::NotesTreeItem], names: &mut Vec<Strin
 
 /// Depth-first search of the note tree for a file name, case-insensitive like
 /// Obsidian's link resolution.
-fn find_note(items: &[notes_core::NotesTreeItem], file: &str) -> Option<PathBuf> {
+fn find_note(items: &[Rc<notes_core::NotesTreeItem>], file: &str) -> Option<PathBuf> {
     items.iter().find_map(|item| {
         if item.is_folder {
             find_note(&item.children, file)
@@ -737,18 +814,37 @@ fn compact_path(store_root: &Path, path: &Path) -> String {
 }
 
 /// The note's age for the head's right side: now, 5m, 2h, 3d.
-fn edited_age(path: &Path) -> Option<String> {
-    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
-    let elapsed = std::time::SystemTime::now()
-        .duration_since(modified)
-        .ok()?
-        .as_secs();
-    Some(match elapsed {
-        0..=59 => "now".to_string(),
-        60..=3599 => format!("{}m", elapsed / 60),
-        3600..=86_399 => format!("{}h", elapsed / 3600),
-        _ => format!("{}d", elapsed / 86_400),
-    })
+///
+/// `stat` is a syscall, and the head re-renders on every keystroke and every
+/// caret move — so the answer is cached per path and recomputed only once the
+/// bucket it prints could have changed (a minute for "now", an hour for "5m",
+/// a day for "2h"). A miss on a path we just asked about is cached too: the
+/// old version re-stat'ed a missing file on every frame.
+fn edited_age(path: &Path, cache: &mut Option<(PathBuf, String, std::time::Instant)>) -> String {
+    const TTL: std::time::Duration = std::time::Duration::from_secs(60);
+    if let Some((cached_path, label, at)) = cache
+        && cached_path == path
+        && at.elapsed() < TTL
+    {
+        return label.clone();
+    }
+    let now = std::time::Instant::now();
+    let label = std::fs::metadata(path)
+        .ok()
+        .and_then(|meta| meta.modified().ok())
+        .and_then(|modified| std::time::SystemTime::now().duration_since(modified).ok())
+        .map(|age| {
+            let elapsed = age.as_secs();
+            match elapsed {
+                0..=59 => "now".to_string(),
+                60..=3599 => format!("{}m", elapsed / 60),
+                3600..=86_399 => format!("{}h", elapsed / 3600),
+                _ => format!("{}d", elapsed / 86_400),
+            }
+        })
+        .unwrap_or_else(|| "now".to_string());
+    *cache = Some((path.to_path_buf(), label.clone(), now));
+    label
 }
 
 impl Render for NotesPage {
@@ -800,6 +896,10 @@ impl Render for NotesPage {
                     this.list_visible = !this.list_visible;
                     cx.notify();
                     cx.stop_propagation();
+                } else if control && event.keystroke.key == "k" {
+                    // the design's Ctrl+K: the title bar's search field
+                    this.search.update(cx, |field, cx| field.focus(window, cx));
+                    cx.stop_propagation();
                 } else if control && event.keystroke.key == "," {
                     this.section = match this.section {
                         Section::Settings => Section::Notes,
@@ -846,6 +946,10 @@ impl Render for NotesPage {
                     .child(self.render_body(note_title, dirty, armed, window, cx)),
             )
             .relative();
+        // the search results float over the panes, under the title bar field
+        if let Some(popup) = self.render_search_popup(window, cx) {
+            root = root.child(popup);
+        }
         if let Some(toasts) = self.render_toasts(cx) {
             root = root.child(toasts);
         }
@@ -1094,7 +1198,7 @@ impl NotesPage {
         }
         Some(
             motion::enter(
-                "toast-enter",
+                ("toast-enter", notice.seq),
                 div()
                     .absolute()
                     .bottom_3()
@@ -1172,6 +1276,25 @@ impl NotesPage {
                     .whitespace_nowrap()
                     .child("Warp Notes"),
             )
+            // the family: the sibling apps this window can open, right after
+            // its own mark and name, behind one separator
+            .child(
+                shell::app_links().child(
+                    shell::app_link(
+                        "notes-launch-station",
+                        "icons/logo-station.svg",
+                        "Open Warp Station",
+                    )
+                    .on_click(|_, _, _| {
+                        if let Err(err) = std::process::Command::new("warp-station").spawn() {
+                            tracing::warn!("could not launch warp-station: {err}");
+                        }
+                    })
+                    .when(SHOW_TOOLTIPS, |d| {
+                        d.tooltip(crate::ui::tooltip_text("Open Warp Station"))
+                    }),
+                ),
+            )
             .when_some(self.notes_scope.clone(), |row, repo| {
                 row.child(
                     div()
@@ -1204,6 +1327,75 @@ impl NotesPage {
                     }),
                 ))
             })
+            // search: the app's one search field, in the title bar over the
+            // list it searches. The spacers keep it clear of the brand on one
+            // side and the window controls on the other; it is not centred on
+            // the window, which is why the popup reads its painted box.
+            .child(div().flex_1().h_full())
+            .child({
+                let box_slot = self.search_field_box.clone();
+                div()
+                    .occlude()
+                    .flex_shrink_0()
+                    .w(px(SEARCH_W))
+                    .relative()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    // paint-phase capture of the field's box: the results popup
+                    // hangs off the real one, not a guessed centre
+                    .child(
+                        canvas(
+                            |_, _, _| {},
+                            move |bounds, _, _, _| {
+                                box_slot.set(Some((
+                                    bounds.origin.x.as_f32(),
+                                    bounds.size.width.as_f32(),
+                                )));
+                            },
+                        )
+                        .absolute()
+                        .size_full(),
+                    )
+                    .child(
+                        warpui_kit_core::shell::field(
+                            "notes-search-field",
+                            Input::new(&self.search)
+                                .with_size(theme::field_size())
+                                .cleanable(true)
+                                .prefix(icon(
+                                    "icons/icon-search.svg",
+                                    px(theme::icon_small()),
+                                    theme::text_muted(),
+                                ))
+                                .suffix(
+                                    div()
+                                        .flex_shrink_0()
+                                        .rounded(px(4.))
+                                        .border_1()
+                                        .border_color(theme::line_strong())
+                                        .mx_1()
+                                        .px_1p5()
+                                        .font_family(theme::code_font())
+                                        .text_size(px(theme::font_micro()))
+                                        .text_color(theme::text_dim())
+                                        .child("Ctrl K"),
+                                ),
+                        )
+                        // the results hang under the field, so the keyboard
+                        // belongs to the search while it has text
+                        .on_key_down(cx.listener(
+                            |this, event: &gpui::KeyDownEvent, window, cx| {
+                                if event.keystroke.key == "escape" {
+                                    this.search.update(cx, |field, cx| {
+                                        field.set_value(String::new(), window, cx)
+                                    });
+                                    this.search_hits.clear();
+                                    cx.notify();
+                                    cx.stop_propagation();
+                                }
+                            },
+                        )),
+                    )
+            })
             .child(div().flex_1().h_full())
             .when(self.section == Section::Notes, |row| {
                 row.child(crate::ui::window_button(
@@ -1222,18 +1414,6 @@ impl NotesPage {
                     }),
                 ))
             })
-            .child(crate::ui::window_button(
-                "notes-launch-station",
-                "icons/logo-station.svg",
-                theme::raised().into(),
-                "Open Warp Station",
-                SHOW_TOOLTIPS,
-                |_, _, _| {
-                    if let Err(err) = std::process::Command::new("warp-station").spawn() {
-                        tracing::warn!("could not launch warp-station: {err}");
-                    }
-                },
-            ))
             .child(div().w(px(1.)).h(px(20.)).mx_1().bg(theme::hairline()))
             .child(crate::ui::window_button(
                 "notes-minimize",
@@ -1354,30 +1534,44 @@ impl NotesPage {
 
     /// The status strip: "N words · N chars · N lines", the unsaved hint,
     /// and "Ln x, Col y".
+    ///
+    /// The counts scan the whole document, and this bar re-renders on every
+    /// caret move and every editor notify — so they are cached against the
+    /// editor's revision, which moves only when the text does. Without that,
+    /// a long note paid a full pass over its bytes per keystroke.
     fn render_status_bar(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let text = if self.open_note.is_some() {
-            self.editor.read(cx).value()
-        } else {
-            SharedString::new("")
-        };
-        let words = text.split_whitespace().count();
-        let chars = text.chars().count();
-        let lines = text.lines().count();
-        let dirty = self.open_note.is_some() && text.as_ref() != self.saved_text.as_str();
+        // `stats_revision` is None exactly while no note is open, so opening
+        // and closing both invalidate it without a separate flag
         let (line, col) = if self.open_note.is_some() {
             let byte = self.editor.read(cx).selected_range().start;
-            let prefix = &text[..byte.min(text.len())];
-            let line = prefix.matches('\n').count() + 1;
-            let col = prefix
-                .rsplit('\n')
-                .next()
-                .map(|l| l.chars().count())
-                .unwrap_or(0)
-                + 1;
-            (line, col)
+            self.editor.read(cx).line_col(byte)
         } else {
             (1, 1)
         };
+        let revision = self
+            .open_note
+            .is_some()
+            .then(|| self.editor.read(cx).revision());
+        if self.stats_revision != revision {
+            self.stats_revision = revision;
+            self.text_stats = match revision {
+                Some(_) => {
+                    let text = self.editor.read(cx).value();
+                    TextStats {
+                        words: text.split_whitespace().count(),
+                        chars: text.chars().count(),
+                        lines: text.lines().count(),
+                    }
+                }
+                None => TextStats::default(),
+            };
+        }
+        let TextStats {
+            words,
+            chars,
+            lines,
+        } = self.text_stats;
+        let dirty = self.open_note.is_some() && self.is_dirty(cx);
         let mut strip = div()
             .id("notes-status")
             .flex()
@@ -1403,10 +1597,10 @@ impl NotesPage {
             .into_any_element()
     }
 
-    /// The list pane: the tree tools over the tree (or the search results),
-    /// on the shell's list surface.
+    /// The list pane: the tree tools over the tree, on the shell's list
+    /// surface. Search does not replace the tree — its results are the title
+    /// bar's popup — so the list keeps its scroll and selection while typing.
     fn render_tree(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let term = self.search.read(cx).value().to_string();
         let can_create = self.notes_scope.is_some() || !self.tree.is_empty();
         let mut tree = shell::list_pane(self.prefs.list_width)
             .id("notes-sidebar")
@@ -1477,34 +1671,6 @@ impl NotesPage {
                             )),
                     ),
             )
-            // search: the whole store, on the line under the title
-            .child(
-                div().flex_shrink_0().px_4().pb_3().child(
-                    div()
-                        .w_full()
-                        .min_w_0()
-                        .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                            if event.keystroke.key == "escape" {
-                                this.search.update(cx, |field, cx| {
-                                    field.set_value(String::new(), window, cx)
-                                });
-                                this.search_hits.clear();
-                                cx.notify();
-                            }
-                        }))
-                        .child(warpui_kit_core::shell::field(
-                            "field-search",
-                            Input::new(&self.search)
-                                .with_size(theme::field_size())
-                                .cleanable(true)
-                                .prefix(icon(
-                                    "icons/icon-search.svg",
-                                    px(theme::icon_small() - 1.),
-                                    theme::text_faint(),
-                                )),
-                        )),
-                ),
-            )
             // inline "new note" form, stacked for the narrow column
             .when(self.create_open, |card| {
                 card.child(
@@ -1573,71 +1739,112 @@ impl NotesPage {
                 )
             });
 
-        if !term.trim().is_empty() {
-            let count = self.search_hits.len();
-            let mut hits = div()
-                .id("notes-hits")
-                .flex()
-                .flex_col()
-                .pt_1()
-                .px_2()
-                .gap_0p5()
-                .overflow_y_scroll()
-                // the count heads the results, or the pane says there are none
-                .child(
-                    div()
-                        .px_2()
-                        .py_1p5()
-                        .text_size(px(theme::font_meta()))
-                        .text_color(theme::text_faint())
-                        .child(if count == 0 {
-                            "No matches.".to_string()
-                        } else {
-                            format!("{count} {}", if count == 1 { "note" } else { "notes" })
-                        }),
-                );
-            for (index, hit) in self.search_hits.iter().enumerate() {
-                hits = hits.child(
-                    div()
-                        .id(("search-hit", index as u64))
-                        .a11y_button(format!("{} — {}", hit.title, hit.excerpt))
-                        .cursor_pointer()
-                        .rounded(px(6.))
-                        .px_2()
-                        .py_1p5()
-                        .hover(|s| s.bg(theme::raised()))
-                        .on_click({
-                            let path = hit.path.clone();
-                            cx.listener(move |this, _, window, cx| {
-                                this.open_note(path.clone(), window, cx)
-                            })
-                        })
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .child(
-                                    div()
-                                        .text_size(px(theme::font_body()))
-                                        .text_color(theme::text_dim())
-                                        .child(hit.title.clone()),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(theme::font_meta()))
-                                        .text_color(theme::text_faint())
-                                        .child(hit.excerpt.clone()),
-                                ),
-                        ),
-                );
-            }
-            tree = tree.child(hits);
-        } else {
-            // uniform_list owns the scrolling: only the rows in the viewport
-            // are laid out, however many notes the store holds
-            tree = tree.child(self.render_tree_list(cx));
-        }
+        tree = tree.child(self.render_tree_list(cx));
         tree.into_any_element()
+    }
+
+    /// The search results, as the design's popup under the title bar field.
+    /// Absent while the field is empty; the popup is the only thing a search
+    /// draws, so the tree underneath keeps its scroll and selection.
+    fn render_search_popup(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        // The field is not at the window's centre — the brand, the app links
+        // and the scope chip all sit to its left — so the popup hangs off the
+        // field's own painted box rather than a guessed centre. Before the
+        // first paint there is no box to hang it from.
+        let _ = window;
+        let (left, width) = self.search_field_box.get()?;
+        let term = self.search.read(cx).value().trim().to_string();
+        if term.is_empty() {
+            return None;
+        }
+        let hits = &self.search_hits;
+        let mut rows = div().flex().flex_col().gap_0p5();
+        if hits.is_empty() {
+            rows = rows.child(
+                div()
+                    .px_2()
+                    .py_2()
+                    .text_size(px(theme::font_body()))
+                    .text_color(theme::text_faint())
+                    .child("No matches."),
+            );
+        }
+        // a popup is a glance, not a list: the design caps it and the tree
+        // stays the way to reach everything
+        for (index, hit) in hits.iter().take(SEARCH_POPUP_ROWS).enumerate() {
+            let path = hit.path.clone();
+            rows = rows.child(
+                div()
+                    .id(("notes-search-hit", index as u64))
+                    .debug_selector({
+                        let title = hit.title.clone();
+                        move || format!("notes-search-hit-{title}")
+                    })
+                    .a11y_button(format!("{} — {}", hit.title, hit.excerpt))
+                    .cursor_pointer()
+                    .rounded(px(6.))
+                    .px_2()
+                    .py_1p5()
+                    .flex()
+                    .flex_col()
+                    .hover(|s| s.bg(theme::raised()))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.search
+                            .update(cx, |field, cx| field.set_value(String::new(), window, cx));
+                        this.search_hits.clear();
+                        this.open_note(path.clone(), window, cx);
+                    }))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(theme::font_body()))
+                            .text_color(theme::text_dim())
+                            .child(hit.title.clone()),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(theme::font_meta()))
+                            .text_color(theme::text_faint())
+                            .child(hit.excerpt.clone()),
+                    ),
+            );
+        }
+        if hits.len() > SEARCH_POPUP_ROWS {
+            rows = rows.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_size(px(theme::font_meta()))
+                    .text_color(theme::text_faint())
+                    .child(format!("{} more", hits.len() - SEARCH_POPUP_ROWS)),
+            );
+        }
+        Some(
+            div()
+                .id("notes-search-popup")
+                .debug_selector(|| "notes-search-popup".into())
+                .absolute()
+                .top(px(theme::scaled(shell::TITLE_BAR_HEIGHT)))
+                // under the field it belongs to, from its painted box
+                .left(px(left))
+                .w(px(width))
+                .occlude()
+                .rounded_lg()
+                .border_1()
+                .border_color(theme::hairline())
+                .bg(theme::overlay())
+                .shadow_lg()
+                .p_1()
+                .child(rows)
+                .into_any_element(),
+        )
     }
 
     /// The tree flattened to what is on screen: one entry per visible row,
@@ -1647,9 +1854,9 @@ impl NotesPage {
     /// the viewport.
     fn visible_tree_rows(
         &self,
-        items: &[notes_core::NotesTreeItem],
+        items: &[Rc<notes_core::NotesTreeItem>],
         depth: usize,
-        out: &mut Vec<(notes_core::NotesTreeItem, usize)>,
+        out: &mut Vec<(Rc<notes_core::NotesTreeItem>, usize)>,
     ) {
         for item in items {
             let expanded = self.expanded.contains(&item.full_path);
@@ -1773,7 +1980,9 @@ impl NotesPage {
         let mut rows = Vec::new();
         let tree = self.tree.clone();
         self.visible_tree_rows(&tree, 0, &mut rows);
-        let editor_text = self.editor.read(cx).value().to_string();
+        // the editor's own handle: comparing a row's unsaved dot needs the
+        // text, and a clone here is a refcount bump, not a copy
+        let editor_text = self.editor.read(cx).value();
         let count = rows.len();
         uniform_list(
             SharedString::from("notes-tree-rows"),
@@ -1781,8 +1990,8 @@ impl NotesPage {
             cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
                 range
                     .map(|index| {
-                        let (item, depth) = rows[index].clone();
-                        this.render_tree_row(&item, depth, index, &editor_text, cx)
+                        let (item, depth) = &rows[index];
+                        this.render_tree_row(item, *depth, index, &editor_text, cx)
                     })
                     .collect()
             }),
@@ -1990,8 +2199,9 @@ impl NotesPage {
                                 .child(compact_path(&self.store_root, &path)),
                         )
                         .child(div().flex_1())
-                        .when_some(edited_age(&path), |row, age| {
-                            row.child(format!("Edited {age}"))
+                        .child({
+                            let age = edited_age(&path, &mut self.age_cache);
+                            format!("Edited {age}")
                         }),
                 )
             })

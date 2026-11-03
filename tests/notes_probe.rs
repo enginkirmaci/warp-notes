@@ -724,3 +724,158 @@ fn a_large_store_lays_out_only_the_visible_rows(cx: &mut TestAppContext) {
 
     let _ = std::fs::remove_dir_all(&home);
 }
+
+/// Search lives in the title bar, not the list: the field is the design's one
+/// search control, and its results are a popup under it — the tree keeps its
+/// scroll and selection while you type. The popup is capped, so a broad term
+/// matching the whole store never builds hundreds of rows.
+#[gpui::test]
+fn search_sits_in_the_titlebar_and_caps_its_popup(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+
+    let home = std::env::temp_dir().join(format!("warpnotes-probe-hits-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let notes = home.join(".warp/notes/alpha");
+    std::fs::create_dir_all(&notes).unwrap();
+    // every file matches the term, by name and by body
+    for ix in 0..600 {
+        std::fs::write(
+            notes.join(format!("shared-{ix:04}.md")),
+            format!("# shared {ix}\n\nshared body {ix}\n"),
+        )
+        .unwrap();
+    }
+
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join(".warp/notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    // the search field is in the title bar, and the list pane has none
+    assert!(
+        bounds(cx, "notes-search-field").is_some(),
+        "the search field is in the title bar",
+    );
+    assert!(
+        bounds(cx, "field-search").is_none(),
+        "the list pane no longer carries a search field",
+    );
+
+    // with nothing typed there is no popup over the tree
+    assert!(
+        bounds(cx, "notes-search-popup").is_none(),
+        "an empty field draws no popup",
+    );
+
+    // the search the page runs on a keystroke, run straight: the field's
+    // Change path debounces on a real timer, which a headless probe has no
+    // reason to wait out for a result set
+    cx.update(|window, cx| {
+        let field = page.read(cx).search_handle().clone();
+        field.update(cx, |field, cx| field.set_value("shared", window, cx));
+        page.update(cx, |page, cx| {
+            page.run_search_for_probe("shared".into(), cx)
+        });
+        drop(window.draw(cx));
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    let hits = cx.read_entity(&page, |page, cx| page.search_hit_count(cx));
+    assert_eq!(hits, 600, "the search matched every seeded note");
+
+    // the results are the title bar's popup, capped: a glance, not a list
+    let popup = bounds(cx, "notes-search-popup").expect("a term with matches opens the popup");
+    let field = bounds(cx, "notes-search-field").expect("the field");
+    assert!(
+        (popup.origin.x - field.origin.x).abs() < px(2.),
+        "the popup hangs off the field's left edge ({popup:?} vs {field:?})",
+    );
+    assert!(
+        (popup.size.width - field.size.width).abs() < px(2.),
+        "the popup is the field's width ({popup:?} vs {field:?})",
+    );
+    assert!(
+        popup.origin.y >= field.origin.y + field.size.height - px(1.),
+        "the popup sits under the field ({popup:?} vs {field:?})",
+    );
+    // the tree is still the list underneath, so the pane keeps working
+    assert!(
+        bounds(cx, "notes-tree-rows").is_some(),
+        "the tree stays the list while the popup shows",
+    );
+    // The store enumerates files in `readdir` order, not by name, so count
+    // what the popup laid out rather than naming a row.
+    let built = (0..600)
+        .filter(|ix| {
+            let selector: &'static str =
+                Box::leak(format!("notes-search-hit-shared-{ix:04}").into_boxed_str());
+            bounds(cx, selector).is_some()
+        })
+        .count();
+    assert!(built > 0, "the popup lists its matches");
+    assert!(
+        built <= 8,
+        "the popup caps its rows rather than building 600 ({built})",
+    );
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// The status bar's counts scan the whole note, and the bar re-renders on
+/// every caret move — so they are cached against the editor's revision. This
+/// pins that: a redraw with no edit reuses the cached counts, and an edit
+/// recomputes them.
+#[gpui::test]
+fn status_counts_are_cached_until_the_text_changes(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-stats");
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join(".warp/notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+    click(cx, "note-item-note.md");
+
+    let (words, chars, lines, revision) = cx.read_entity(&page, |page, _| page.text_stats());
+    assert!(words > 0, "the open note was counted");
+    assert!(chars >= words, "chars cover the words");
+    assert!(lines > 0, "the note has lines");
+    let revision = revision.expect("the counts carry the revision they came from");
+
+    // a redraw with nothing typed keeps the cached numbers and revision
+    cx.update(|window, cx| drop(window.draw(cx)));
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+    let (w2, c2, l2, r2) = cx.read_entity(&page, |page, _| page.text_stats());
+    assert_eq!((w2, c2, l2), (words, chars, lines), "no edit, no recount");
+    assert_eq!(r2, Some(revision), "the cached revision still stands");
+
+    // typing moves the revision, so the next frame recounts
+    click(cx, "notes-editor-column");
+    cx.simulate_input("one two three four");
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+    let (w3, _, _, r3) = cx.read_entity(&page, |page, _| page.text_stats());
+    assert!(w3 > words, "typed words reach the count ({w3} vs {words})",);
+    assert_ne!(r3, Some(revision), "the revision followed the edit");
+
+    let _ = std::fs::remove_dir_all(&home);
+}

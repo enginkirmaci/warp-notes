@@ -5,16 +5,20 @@
 
 use crate::paths::default_store_root;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 const SEARCH_CONTENT_CAP_BYTES: u64 = 2 * 1024 * 1024;
 const SEARCH_FILE_CAP: usize = 2000;
 
+/// One entry of the notes tree. Children are `Rc`s: the UI flattens the
+/// visible rows on every render, and a collapsed 2000-note store must copy
+/// pointers there, not every name and path.
 #[derive(Clone, Debug)]
 pub struct NotesTreeItem {
     pub name: String,
     pub full_path: PathBuf,
     pub is_folder: bool,
-    pub children: Vec<NotesTreeItem>,
+    pub children: Vec<Rc<NotesTreeItem>>,
 }
 
 #[derive(Clone, Debug)]
@@ -59,14 +63,14 @@ pub fn resolve_note_in_store(store_root: &Path, requested: &Path) -> anyhow::Res
     Ok(resolved)
 }
 
-pub fn load_tree(repo_notes_root: &Path) -> Vec<NotesTreeItem> {
+pub fn load_tree(repo_notes_root: &Path) -> Vec<Rc<NotesTreeItem>> {
     if !repo_notes_root.is_dir() {
         return Vec::new();
     }
     load_directory(repo_notes_root)
 }
 
-fn load_directory(directory: &Path) -> Vec<NotesTreeItem> {
+fn load_directory(directory: &Path) -> Vec<Rc<NotesTreeItem>> {
     let mut folders = Vec::new();
     let mut notes = Vec::new();
     let Ok(entries) = std::fs::read_dir(directory) else {
@@ -80,18 +84,18 @@ fn load_directory(directory: &Path) -> Vec<NotesTreeItem> {
             continue;
         }
         match entry.file_type() {
-            Ok(t) if t.is_dir() => folders.push(NotesTreeItem {
+            Ok(t) if t.is_dir() => folders.push(Rc::new(NotesTreeItem {
                 children: load_directory(&entry.path()),
                 name,
                 full_path: entry.path(),
                 is_folder: true,
-            }),
-            Ok(_) if name.to_lowercase().ends_with(".md") => notes.push(NotesTreeItem {
+            })),
+            Ok(_) if name.to_lowercase().ends_with(".md") => notes.push(Rc::new(NotesTreeItem {
                 name,
                 full_path: entry.path(),
                 is_folder: false,
                 children: Vec::new(),
-            }),
+            })),
             _ => {}
         }
     }
