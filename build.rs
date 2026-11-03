@@ -4,6 +4,7 @@ fn main() {
     // so this block must vanish on every other host.
     #[cfg(target_os = "windows")]
     {
+        println!("cargo:rerun-if-changed=packaging/windows/warp-notes.ico");
         let mut res = winresource::WindowsResource::new();
         res.set_icon("packaging/windows/warp-notes.ico");
         if let Err(err) = res.compile() {
