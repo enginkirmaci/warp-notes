@@ -25,23 +25,7 @@ gpui-kit = { version = "0.7", features = ["test-support"] }
 # the shared component family (local sibling repos; swap to version deps to publish)
 warpui-kit-core = { path = "../../kits/warpui-kit-core" }
 warpui-kit-platform = { path = "../../kits/warpui-kit-platform" }
-warpui-kit-markdown = { path = "../../kits/warpui-kit-markdown", features = [
-    "mermaid",
-    # code-block highlighting in notes, the family's language set
-    "tree-sitter-bash",
-    "tree-sitter-c",
-    "tree-sitter-cpp",
-    "tree-sitter-css",
-    "tree-sitter-go",
-    "tree-sitter-html",
-    "tree-sitter-javascript",
-    "tree-sitter-python",
-    "tree-sitter-rust",
-    "tree-sitter-toml",
-    "tree-sitter-tsx",
-    "tree-sitter-typescript",
-    "tree-sitter-yaml",
-] }
+warpui-kit-markdown = { path = "../../kits/warpui-kit-markdown", features = ["mermaid", "all-languages"] }
 
 # gpui-pre: crates.io snapshots of zed's gpui, pinned to the exact rev
 # gpui-kit 0.7 is built against (=zed@1a28cff). Bump together with gpui-kit.
