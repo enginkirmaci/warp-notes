@@ -5,6 +5,7 @@
 
 use warp_notes::theme;
 use warp_notes::ui::notes::{Launch, NotesPage};
+use warp_notes::ui_prefs::set_prefs_file_for_probe;
 
 use gpui::{
     AppContext, Bounds, Modifiers, Pixels, Point, TestAppContext, VisualTestContext, px, size,
@@ -53,7 +54,16 @@ fn temp_home(prefix: &str) -> PathBuf {
     let home = std::env::temp_dir().join(format!("{prefix}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     seed_notes(&home);
+    point_prefs_at(&home);
     home
+}
+
+/// The scenario's prefs live inside its own temp home: a relaunch inside the
+/// scenario reads them back, and the developer's own ~/.warp-notes file is
+/// neither read nor rewritten by a test run. Scenarios serialize on the home
+/// lock, so the global override never crosses between them.
+fn point_prefs_at(home: &std::path::Path) {
+    set_prefs_file_for_probe(Some(home.join("settings.json")));
 }
 
 fn open_page(
@@ -692,6 +702,7 @@ fn a_large_store_lays_out_only_the_visible_rows(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(&home);
     let notes = home.join(".warp/notes/alpha");
     std::fs::create_dir_all(&notes).unwrap();
+    point_prefs_at(&home);
     // 2000 notes: comfortably more than a viewport can show
     for ix in 0..2000 {
         std::fs::write(notes.join(format!("note-{ix:04}.md")), "# t\n").unwrap();
@@ -749,6 +760,7 @@ fn search_sits_in_the_titlebar_and_caps_its_popup(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(&home);
     let notes = home.join(".warp/notes/alpha");
     std::fs::create_dir_all(&notes).unwrap();
+    point_prefs_at(&home);
     // every file matches the term, by name and by body
     for ix in 0..600 {
         std::fs::write(
@@ -891,6 +903,142 @@ fn status_counts_are_cached_until_the_text_changes(cx: &mut TestAppContext) {
     let (w3, _, _, r3) = cx.read_entity(&page, |page, _| page.text_stats());
     assert!(w3 > words, "typed words reach the count ({w3} vs {words})",);
     assert_ne!(r3, Some(revision), "the revision followed the edit");
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// Saving is automatic: a second of typing silence writes the note, and no
+/// surface carries a save step. The debounce rides the test clock.
+#[gpui::test]
+fn edits_autosave_after_the_debounce(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-autosave");
+    let (handle, _page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join(".warp/notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+    click(cx, "note-item-note.md");
+
+    let note = home.join(".warp/notes/alpha/note.md");
+    let on_disk = std::fs::read_to_string(&note).unwrap();
+    let live = bounds(cx, "notes-live").expect("the live editor renders");
+    cx.simulate_click(
+        Point::new(
+            live.origin.x + live.size.width / 2.,
+            live.origin.y + live.size.height / 2.,
+        ),
+        Modifiers::default(),
+    );
+    cx.run_until_parked();
+    cx.simulate_input("typed without saving");
+    cx.run_until_parked();
+
+    // the write waits out the idle second, not the keystroke
+    assert_eq!(
+        std::fs::read_to_string(&note).unwrap(),
+        on_disk,
+        "the debounce has not run yet"
+    );
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(2));
+    cx.run_until_parked();
+    let saved = std::fs::read_to_string(&note).unwrap();
+    assert!(
+        saved.contains("typed without saving"),
+        "the idle second wrote the note: {saved:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// Everything the user arranges comes back on relaunch: the open note, the
+/// tree's expanded folders, the hidden list pane, the rail's section and the
+/// scope the up button reached.
+#[gpui::test]
+fn a_relaunch_restores_the_arranged_ui(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-restore");
+    let launch = Launch {
+        store_root: Some(home.join(".warp/notes")),
+        repo_scope: Some("alpha".into()),
+        open_note: None,
+    };
+
+    // arrange: up to the whole store, expand alpha, open a note, hide the
+    // list, move the rail to Settings
+    let (handle, _page) = open_page(cx, launch.clone());
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+    click(cx, "notes-up-dir");
+    click(cx, "note-item-alpha");
+    click(cx, "note-item-note.md");
+    click(cx, "notes-list-toggle");
+    click(cx, "rail-settings");
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    // relaunch: no --note and no --repo pin, and the arranged state comes
+    // back — a --repo launch would pin the scope again by contract
+    let (handle, _page) = open_page(
+        cx,
+        Launch {
+            store_root: launch.store_root.clone(),
+            repo_scope: None,
+            open_note: None,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    // the Settings screen came back, so the note's chrome is not on screen
+    assert!(
+        bounds(cx, "text-size-normal").is_some(),
+        "the rail reopens on Settings"
+    );
+
+    // back on Notes: the open note, the whole-store scope and the hidden
+    // list pane all came back with it
+    click(cx, "rail-notes");
+    assert!(
+        bounds(cx, "notes-toolbar").is_some(),
+        "the last open note is open again"
+    );
+    assert!(
+        bounds(cx, "notes-sidebar").is_none(),
+        "the hidden list pane stays hidden"
+    );
+    assert!(
+        bounds(cx, "notes-up-dir").is_none(),
+        "the restored scope is the store root, so there is no up button"
+    );
+
+    // showing the list again reveals the whole-store scope and the
+    // remembered expansion
+    click(cx, "notes-list-toggle");
+    assert!(
+        bounds(cx, "notes-sidebar").is_some(),
+        "the toggle brings the list back"
+    );
+    assert!(
+        bounds(cx, "note-item-beta").is_some(),
+        "the up button's whole-store scope comes back"
+    );
+    assert!(
+        bounds(cx, "note-item-task.md").is_some(),
+        "the expanded folder stayed expanded"
+    );
 
     let _ = std::fs::remove_dir_all(&home);
 }

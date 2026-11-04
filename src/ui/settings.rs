@@ -7,7 +7,7 @@
 
 use crate::theme;
 use crate::ui::A11y;
-use crate::ui::notes::NotesPage;
+use crate::ui::notes::{NotesPage, wheel_reaches_content};
 use gpui::prelude::*;
 use gpui::{Context, FontWeight, SharedString, Window, div, px};
 use warpui_kit_core::settings as kit;
@@ -56,6 +56,13 @@ impl NotesPage {
                 .a11y_button(section.label())
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.settings_section = section;
+                    // the section is user-arranged, so it survives restarts
+                    this.prefs.settings_section = match section {
+                        SettingsSection::General => "general",
+                        SettingsSection::Appearance => "appearance",
+                    }
+                    .into();
+                    this.prefs.save();
                     cx.notify();
                 }))
                 .child(
@@ -139,6 +146,23 @@ impl NotesPage {
                             .flex_1()
                             .min_h_0()
                             .overflow_y_scroll()
+                            .track_scroll(&self.settings_scroll)
+                            // the pane is the one scrollable of the settings
+                            // screen: a wheel event that moves it is consumed
+                            // here, so the tree (or anything restacked under
+                            // a later frame) never reacts to the same event
+                            .on_scroll_wheel(cx.listener(
+                                |this, event: &gpui::ScrollWheelEvent, window, cx| {
+                                    let handle = &this.settings_scroll;
+                                    if wheel_reaches_content(
+                                        handle.offset(),
+                                        handle.max_offset(),
+                                        event.delta.pixel_delta(window.line_height()).y,
+                                    ) {
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            ))
                             .p(px(shell::DETAIL_PADDING))
                             .child(
                                 // the design's `.measure`: rows, not cards

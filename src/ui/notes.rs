@@ -13,8 +13,9 @@ use crate::ui::settings::SettingsSection;
 use crate::ui_prefs::UiPrefs;
 use gpui::prelude::*;
 use gpui::{
-    App, Context, Entity, Focusable as _, FontWeight, MouseButton, Pixels, SharedString,
-    WeakEntity, Window, WindowControlArea, canvas, div, px, uniform_list,
+    App, Context, Entity, Focusable as _, FontWeight, MouseButton, Pixels, ScrollHandle,
+    ScrollWheelEvent, SharedString, UniformListScrollHandle, WeakEntity, Window, WindowControlArea,
+    canvas, div, px, uniform_list,
 };
 use gpui_kit::component::input::{InputEvent, InputState};
 use std::cell::Cell;
@@ -29,6 +30,11 @@ gpui::actions!(warp_notes, [OpenFind]);
 
 /// The splitter between the list and the detail.
 const SPLITTER_WIDTH: f32 = 4.;
+
+/// How long the editor stays idle before a note saves itself. Long enough
+/// that a burst of typing writes once, short enough that a crash or a yanked
+/// power cord loses at most the last second.
+const AUTOSAVE_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// The rail's sections.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -115,6 +121,12 @@ pub struct NotesPage {
     /// the paint-phase listener registration because window.on_mouse_event
     /// may only be called during paint in this gpui rev
     splitter_drag: Rc<Cell<Option<(Pixels, f32)>>>,
+    /// The tree list's scroll handle. The wheel barrier reads the offsets so
+    /// it consumes only the events the list actually answers — the outer
+    /// scrollable must not also scroll on the same event.
+    tree_scroll: UniformListScrollHandle,
+    /// The settings pane's scroll handle, same job as `tree_scroll`.
+    pub(crate) settings_scroll: ScrollHandle,
     /// The loaded tree behind an Rc: every editor keystroke re-renders the
     /// page, and the rebuild must not deep-clone the whole tree per frame.
     tree: Rc<Vec<Rc<notes_core::NotesTreeItem>>>,
@@ -151,6 +163,9 @@ pub struct NotesPage {
     find_index: usize,
     /// The live markdown editor.
     editor: Entity<LiveEditorState>,
+    /// The debounced autosave: every edit bumps this, and only the task from
+    /// the last edit still holding the epoch writes the note.
+    save_epoch: u64,
     /// Delete arming: (path, expire-instant) — a second click within 3s fires.
     armed_delete: Option<(PathBuf, std::time::Instant)>,
     /// The "+ note" create form (name + optional folder).
@@ -192,44 +207,67 @@ impl NotesPage {
             }
         })
         .detach();
-        // rendered links lead out of the editor: the browser, or another note
+        // rendered links lead out of the editor: the browser, or another note;
+        // an edit re-arms the autosave debounce
         cx.subscribe_in(
             &editor,
             window,
             |this, _, event: &LiveEditorEvent, window, cx| match event {
                 LiveEditorEvent::OpenUrl(url) => cx.open_url(url),
                 LiveEditorEvent::OpenNote(target) => this.follow_link(target, window, cx),
-                LiveEditorEvent::Change => {}
+                LiveEditorEvent::Change => this.schedule_autosave(cx),
             },
         )
         .detach();
         // the status strip and unsaved marker follow every keystroke and
         // every caret move
         cx.observe(&editor, |_, _, cx| cx.notify()).detach();
-        // the remembered bits: list width, and the motion choice (applied
+        // the remembered bits: the layout, and the motion choice (applied
         // before the first frame so nothing animates that should not)
         let prefs = UiPrefs::load();
         // the setting or the desktop's own preference, whichever asks first
         motion::set_reduced(prefs.reduce_motion || motion::system_prefers_reduced());
         // E2E hook: WARP_NOTES_PAGE=settings opens the rail's Settings section
         // on launch (the probes drive surfaces the pointer cannot reach
-        // without taking the human's screen)
+        // without taking the human's screen); otherwise the rail opens where
+        // the last session left it
         let section = match std::env::var("WARP_NOTES_PAGE").as_deref() {
             Ok("settings") => Section::Settings,
-            _ => Section::Notes,
+            _ => match prefs.section.as_str() {
+                "settings" => Section::Settings,
+                _ => Section::Notes,
+            },
         };
+        let settings_section = match prefs.settings_section.as_str() {
+            "appearance" => SettingsSection::Appearance,
+            _ => SettingsSection::General,
+        };
+        // a --repo pin wins over the scope the last session reached; the
+        // tree reopens the folders it had, still under this store root
+        let notes_scope = match notes_scope {
+            Some(repo) => Some(repo),
+            None => prefs.notes_scope.clone(),
+        };
+        let expanded = prefs
+            .expanded
+            .iter()
+            .map(|relative| store_root.join(relative.replace('\\', "/")))
+            .collect();
+        let list_visible = prefs.list_visible;
         let mut page = Self {
             store_root,
             notes_scope,
             section,
-            settings_section: SettingsSection::General,
+            settings_section,
             prefs,
-            list_visible: true,
+            list_visible,
             splitter_drag: Rc::new(Cell::new(None)),
+            tree_scroll: UniformListScrollHandle::default(),
+            settings_scroll: ScrollHandle::default(),
             tree: Rc::new(Vec::new()),
             tree_loaded_for: None,
             note_names_stale: true,
-            expanded: std::collections::HashSet::new(),
+            expanded,
             open_note: None,
             dirty: HashMap::new(),
             saved_text: String::new(),
@@ -245,6 +283,7 @@ impl NotesPage {
             find_hits: Vec::new(),
             find_index: 0,
             editor,
+            save_epoch: 0,
             armed_delete: None,
             create_open: false,
             create_name,
@@ -259,17 +298,7 @@ impl NotesPage {
         if let Some(path) = launch.open_note {
             match notes_core::resolve_note_in_store(&page.store_root, &path) {
                 Ok(path) => {
-                    let root = page.notes_root();
-                    for parent in path.ancestors().skip(1) {
-                        if let Some(root) = &root
-                            && parent.starts_with(root)
-                        {
-                            page.expanded.insert(parent.to_path_buf());
-                        }
-                        if parent.parent().is_none() {
-                            break;
-                        }
-                    }
+                    page.expand_to(&path);
                     page.open_note(path, window, cx);
                 }
                 Err(err) => page.notice(
@@ -278,7 +307,25 @@ impl NotesPage {
                     &format!("cannot open {}: {err}", path.display()),
                 ),
             }
+        } else if let Some(relative) = page.prefs.open_note.clone() {
+            // no note named on the command line: the last session's open note
+            // comes back, so a restart continues where the user left off. A
+            // note deleted since is simply skipped.
+            if let Ok(path) =
+                notes_core::resolve_note_in_store(&page.store_root, Path::new(&relative))
+                && path.is_file()
+            {
+                page.expand_to(&path);
+                page.open_note(path, window, cx);
+            }
         }
+        // quitting or closing the window must not wait out the autosave
+        // debounce: the buffers land on disk before the app goes away
+        cx.on_app_quit(|this, cx| {
+            this.flush_saves(cx);
+            async {}
+        })
+        .detach();
         page
     }
 
@@ -289,6 +336,34 @@ impl NotesPage {
             Some(repo) => Some(notes_core::repo_notes_root(&self.store_root, repo)),
             None => Some(self.store_root.clone()),
         }
+    }
+
+    /// Expands the tree folders down to `path`, so a note reached without the
+    /// tree (a launch argument, a link) still shows where it lives.
+    fn expand_to(&mut self, path: &Path) {
+        let root = self.notes_root();
+        for parent in path.ancestors().skip(1) {
+            if let Some(root) = &root
+                && parent.starts_with(root)
+            {
+                self.expanded.insert(parent.to_path_buf());
+            }
+            if parent.parent().is_none() {
+                break;
+            }
+        }
+    }
+
+    /// Stores the tree's expanded folders in the prefs, relative to the store
+    /// root so a moved store keeps them.
+    fn remember_expanded(&mut self) {
+        self.prefs.expanded = self
+            .expanded
+            .iter()
+            .filter_map(|path| path.strip_prefix(&self.store_root).ok())
+            .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+            .collect();
+        self.prefs.save();
     }
 
     fn reload_tree(&mut self) {
@@ -313,10 +388,22 @@ impl NotesPage {
     }
 
     pub(crate) fn open_note(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        // park the current buffer before switching
+        // the outgoing note lands on disk right away — saving is automatic,
+        // so navigation never has a dirty note behind it. A failed write
+        // parks the buffer instead; the retry paths (a later open of this
+        // note, or the quit-time flush) still hold it in `dirty`.
         if let Some(current) = self.open_note.clone() {
             let text = self.editor.read(cx).value().to_string();
-            self.dirty.insert(current, text);
+            self.dirty.remove(&current);
+            if text != self.saved_text {
+                match notes_core::write_note(&current, &text) {
+                    Ok(()) => tracing::info!("saved {}", current.display()),
+                    Err(err) => {
+                        self.dirty.insert(current, text);
+                        self.notice(cx, NoticeKind::Error, &format!("note save failed: {err}"));
+                    }
+                }
+            }
         }
         // a note that cannot be read (non-UTF-8, permissions, deleted
         // underneath us) must not open as an empty-looking editor — the first
@@ -343,7 +430,16 @@ impl NotesPage {
         self.find_hits.clear();
         self.find_index = 0;
         let folder = path.parent().map(Path::to_path_buf);
-        self.open_note = Some(path);
+        self.open_note = Some(path.clone());
+        // the pointer survives restarts, store-relative so a moved store
+        // keeps it (resolve_note_in_store also takes absolute paths back)
+        self.prefs.open_note = Some(
+            path.strip_prefix(&self.store_root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/"),
+        );
+        self.prefs.save();
         self.editor.update(cx, |state, cx| {
             // relative image paths resolve next to the note
             state.set_base_dir(folder, cx);
@@ -402,7 +498,14 @@ impl NotesPage {
         }
     }
 
-    fn save_current(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    /// Writes the open note now. The autosave debounce calls this a second
+    /// after the last edit; Ctrl+S (kept for muscle memory) calls it at once.
+    /// An already-saved buffer is not rewritten — the debounce's pending task
+    /// fires after a manual save and finds nothing to do.
+    fn save_current(&mut self, cx: &mut Context<Self>) {
+        if !self.is_dirty(cx) {
+            return;
+        }
         let Some(path) = self.open_note.clone() else {
             return;
         };
@@ -416,6 +519,46 @@ impl NotesPage {
             Err(err) => self.notice(cx, NoticeKind::Error, &format!("note save failed: {err}")),
         }
         cx.notify();
+    }
+
+    /// Re-arms the autosave: the editor's Change event bumps the epoch, and
+    /// only the task from the last edit still holding it writes the note —
+    /// a burst of typing saves once, a second after it stops. `set_value`
+    /// emits Change too, but an untouched buffer has nothing to write.
+    fn schedule_autosave(&mut self, cx: &mut Context<Self>) {
+        if !self.is_dirty(cx) {
+            return;
+        }
+        self.save_epoch += 1;
+        let epoch = self.save_epoch;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(AUTOSAVE_DELAY).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.save_epoch == epoch {
+                    this.save_current(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Writes every unsaved buffer now: the open note's, then any parked by
+    /// an earlier failed save. The close button and app quit call this, so
+    /// the debounce never eats an edit.
+    fn flush_saves(&mut self, cx: &mut Context<Self>) {
+        if let Some(path) = self.open_note.clone() {
+            let text = self.editor.read(cx).value().to_string();
+            if text != self.saved_text
+                && let Err(err) = notes_core::write_note(&path, &text)
+            {
+                tracing::warn!("could not save {} on exit: {err}", path.display());
+            }
+        }
+        for (path, text) in std::mem::take(&mut self.dirty) {
+            if let Err(err) = notes_core::write_note(&path, &text) {
+                tracing::warn!("could not save {} on exit: {err}", path.display());
+            }
+        }
     }
 
     /// The sidebar search: the walk reads up to 2000 note files, so it is
@@ -536,6 +679,7 @@ impl NotesPage {
                     .update(cx, |f, cx| f.set_value(String::new(), window, cx));
                 if let Some(parent) = path.parent() {
                     self.expanded.insert(parent.to_path_buf());
+                    self.remember_expanded();
                 }
                 self.open_note(path, window, cx);
             }
@@ -583,6 +727,9 @@ impl NotesPage {
                         self.dirty.remove(&path);
                         self.open_note = None;
                         self.saved_text.clear();
+                        // the deleted note is nobody's open note any more
+                        self.prefs.open_note = None;
+                        self.prefs.save();
                         self.refresh_tree(&root);
                     }
                     Err(err) => {
@@ -738,6 +885,25 @@ fn byte_to_char(text: &str, byte: usize) -> usize {
     text[..byte.min(text.len())].chars().count()
 }
 
+/// True when a vertical scroller at `offset` (≤ 0, clamped to `max_offset`)
+/// has room to move for `delta` — the "the inner one handled it" test. A
+/// wheel event routed to an inner scrollable must not also scroll an outer
+/// one, but a scroller already hard against the edge in the wheel's
+/// direction lets the event pass, as browsers chain it.
+pub(crate) fn wheel_reaches_content(
+    offset: gpui::Point<Pixels>,
+    max_offset: gpui::Point<Pixels>,
+    delta: gpui::Pixels,
+) -> bool {
+    if delta < px(0.) {
+        // scrolling toward the bottom: room is whatever is left below
+        -offset.y < max_offset.y
+    } else {
+        // scrolling back toward the top: any offset off the top moves
+        offset.y < px(0.)
+    }
+}
+
 /// Every note's file name in the tree.
 fn collect_note_names(items: &[Rc<notes_core::NotesTreeItem>], names: &mut Vec<String>) {
     for item in items {
@@ -883,7 +1049,7 @@ impl Render for NotesPage {
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 let control = event.keystroke.modifiers.control;
                 if control && event.keystroke.key == "s" {
-                    this.save_current(window, cx);
+                    this.save_current(cx);
                     cx.stop_propagation();
                 } else if control && event.keystroke.key == "n" {
                     this.create_open = true;
@@ -892,19 +1058,20 @@ impl Render for NotesPage {
                     cx.notify();
                     cx.stop_propagation();
                 } else if control && event.keystroke.key == "\\" {
-                    this.list_visible = !this.list_visible;
-                    cx.notify();
+                    this.toggle_list(cx);
                     cx.stop_propagation();
                 } else if control && event.keystroke.key == "k" {
                     // the design's Ctrl+K: the title bar's search field
                     this.search.update(cx, |field, cx| field.focus(window, cx));
                     cx.stop_propagation();
                 } else if control && event.keystroke.key == "," {
-                    this.section = match this.section {
-                        Section::Settings => Section::Notes,
-                        Section::Notes => Section::Settings,
-                    };
-                    cx.notify();
+                    this.set_section(
+                        match this.section {
+                            Section::Settings => Section::Notes,
+                            Section::Notes => Section::Settings,
+                        },
+                        cx,
+                    );
                     cx.stop_propagation();
                 } else if control && event.keystroke.key == "f" && this.open_note.is_some() {
                     this.find_open = true;
@@ -957,6 +1124,27 @@ impl Render for NotesPage {
 }
 
 impl NotesPage {
+    /// The list pane's visibility, wherever it is toggled from — the state
+    /// and its remembered copy move together.
+    fn toggle_list(&mut self, cx: &mut Context<Self>) {
+        self.list_visible = !self.list_visible;
+        self.prefs.list_visible = self.list_visible;
+        self.prefs.save();
+        cx.notify();
+    }
+
+    /// The rail's open section, remembered so a restart reopens it.
+    fn set_section(&mut self, section: Section, cx: &mut Context<Self>) {
+        self.section = section;
+        self.prefs.section = match section {
+            Section::Notes => "notes",
+            Section::Settings => "settings",
+        }
+        .into();
+        self.prefs.save();
+        cx.notify();
+    }
+
     /// The rail: the tree and editor's section, with Settings pinned to the
     /// bottom.
     fn render_rail(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -972,8 +1160,7 @@ impl NotesPage {
                 )
                 .debug_selector(|| "rail-notes".into())
                 .on_click(cx.listener(|this, _, _, cx| {
-                    this.section = Section::Notes;
-                    cx.notify();
+                    this.set_section(Section::Notes, cx);
                 })),
             )
             .child(div().flex_1())
@@ -986,8 +1173,7 @@ impl NotesPage {
                 )
                 .debug_selector(|| "rail-settings".into())
                 .on_click(cx.listener(|this, _, _, cx| {
-                    this.section = Section::Settings;
-                    cx.notify();
+                    this.set_section(Section::Settings, cx);
                 })),
             )
             .into_any_element()
@@ -1335,6 +1521,10 @@ impl NotesPage {
                             cx.listener(|this, _, _, cx| {
                                 this.notes_scope = None;
                                 this.expanded.clear();
+                                // the scope the user reached is the one the
+                                // next launch without a --repo pin reopens
+                                this.prefs.notes_scope = None;
+                                this.remember_expanded();
                                 cx.notify();
                             }),
                         ))
@@ -1419,10 +1609,7 @@ impl NotesPage {
                                 "Show list"
                             },
                             SHOW_TOOLTIPS,
-                            cx.listener(|this, _, _, cx| {
-                                this.list_visible = !this.list_visible;
-                                cx.notify();
-                            }),
+                            cx.listener(|this, _, _, cx| this.toggle_list(cx)),
                         ))
                     })
                     .child(div().w(px(1.)).h(px(20.)).mx_1().bg(theme::hairline()))
@@ -1461,7 +1648,12 @@ impl NotesPage {
                         theme::tint(theme::DANGER),
                         "Close",
                         SHOW_TOOLTIPS,
-                        |_, window, _| window.remove_window(),
+                        // the buffers land on disk before the window goes —
+                        // closing is a save point, not a data-loss risk
+                        cx.listener(|this, _, window, cx| {
+                            this.flush_saves(cx);
+                            window.remove_window();
+                        }),
                     )),
             )
             .into_any_element()
@@ -1600,11 +1792,9 @@ impl NotesPage {
             .child(format!("{words} words · {chars} chars · {lines} lines"))
             .child(div().flex_1());
         if dirty {
-            strip = strip.child(
-                div()
-                    .text_color(theme::CHANGES)
-                    .child("Unsaved · Ctrl+S to save"),
-            );
+            // saving is automatic: the mark only says the write is still a
+            // second of typing silence away
+            strip = strip.child(div().text_color(theme::CHANGES).child("Unsaved"));
         }
         strip
             .child(format!("Ln {line}, Col {col}"))
@@ -1939,6 +2129,7 @@ impl NotesPage {
                         } else {
                             this.expanded.insert(item.full_path.clone());
                         }
+                        this.remember_expanded();
                     } else {
                         this.open_note(item.full_path.clone(), window, cx);
                     }
@@ -2014,6 +2205,17 @@ impl NotesPage {
                     .collect()
             }),
         )
+        .track_scroll(&self.tree_scroll)
+        // the tree is the inner scrollable of the list pane: when a wheel
+        // event moves it, it is consumed here, so nothing outside — today or
+        // after a later restack — reacts to the same event
+        .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
+            let state = this.tree_scroll.0.borrow();
+            let (offset, max) = (state.base_handle.offset(), state.base_handle.max_offset());
+            if wheel_reaches_content(offset, max, event.delta.pixel_delta(window.line_height()).y) {
+                cx.stop_propagation();
+            }
+        }))
         .flex_1()
         .min_h_0()
         .w_full()
@@ -2127,37 +2329,6 @@ impl NotesPage {
                     .child(div().flex_1())
                     .when(self.open_note.is_some(), |row| {
                         row.child(
-                            div()
-                                .id("note-save")
-                                .a11y_button("Save note")
-                                .cursor_pointer()
-                                .rounded(px(6.))
-                                .h(px(theme::scaled(shell::CONTROL_HEIGHT) - 8.))
-                                .px_3()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap_1p5()
-                                .text_size(px(theme::font_control()))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(theme::text())
-                                .border_1()
-                                .border_color(theme::line_strong())
-                                .bg(theme::panel())
-                                .hover(|s| s.bg(theme::raised()))
-                                .on_click(
-                                    cx.listener(|this, _, window, cx| {
-                                        this.save_current(window, cx)
-                                    }),
-                                )
-                                .child(icon(
-                                    "icons/icon-save.svg",
-                                    px(theme::icon_small() - 2.),
-                                    theme::text_dim(),
-                                ))
-                                .child("Save"),
-                        )
-                        .child(
                             // destructive: the first click arms it, the
                             // second within 3s fires; anything else disarms
                             div()
@@ -2311,6 +2482,10 @@ impl NotesPage {
             .debug_selector(|| "notes-live".into())
             .flex_1()
             .min_h_0()
+            // the editor scrolls on every wheel over its surface (its own
+            // handler, scrollbar included) and never chains past its edge —
+            // so the event ends here instead of reaching anything outside
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
             .child(self.editor_element(cx))
             .into_any_element()
     }
