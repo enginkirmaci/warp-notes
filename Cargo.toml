@@ -19,7 +19,7 @@ winresource = "0.1"
 [dev-dependencies]
 # headless UI probes (tests/); feature-unifies with the normal gpui-kit dep
 # only under `cargo test`
-gpui-kit = { version = "0.7", features = ["test-support"] }
+gpui-kit = { version = "0.9", features = ["test-support"] }
 
 [dependencies]
 # the shared component family (local sibling repos; swap to version deps to publish)
@@ -28,10 +28,10 @@ warpui-kit-platform = { path = "../../kits/warpui-kit-platform" }
 warpui-kit-markdown = { path = "../../kits/warpui-kit-markdown", features = ["mermaid", "all-languages"] }
 
 # gpui-pre: crates.io snapshots of zed's gpui, pinned to the exact rev
-# gpui-kit 0.7 is built against (=zed@1a28cff). Bump together with gpui-kit.
-gpui = { package = "gpui-pre", version = "=0.3.7" }
-gpui_platform = { package = "gpui-pre-platform", version = "=0.3.7", features = ["wayland", "x11"] }
-gpui-kit = { version = "0.7" }
+# gpui-kit 0.9 is built against these exact 0.3.11 snapshots. Bump together with gpui-kit.
+gpui = { package = "gpui-pre", version = "=0.3.11" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features = ["wayland", "x11"] }
+gpui-kit = { version = "0.9" }
 
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

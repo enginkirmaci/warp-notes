@@ -151,8 +151,8 @@ impl NotesPage {
                             // screen: a wheel event that moves it is consumed
                             // here, so the tree (or anything restacked under
                             // a later frame) never reacts to the same event
-                            .on_scroll_wheel(cx.listener(
-                                |this, event: &gpui::ScrollWheelEvent, window, cx| {
+                            .on_scroll(cx.listener(
+                                |this, event: &gpui::ScrollEvent, window, cx| {
                                     let handle = &this.settings_scroll;
                                     if wheel_reaches_content(
                                         handle.offset(),

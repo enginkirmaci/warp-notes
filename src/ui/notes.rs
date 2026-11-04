@@ -13,8 +13,8 @@ use crate::ui::settings::SettingsSection;
 use crate::ui_prefs::UiPrefs;
 use gpui::prelude::*;
 use gpui::{
-    App, Context, Entity, Focusable as _, FontWeight, MouseButton, Pixels, ScrollHandle,
-    ScrollWheelEvent, SharedString, UniformListScrollHandle, WeakEntity, Window, WindowControlArea,
+    App, Context, Entity, Focusable as _, FontWeight, MouseButton, Pixels, ScrollEvent,
+    ScrollHandle, SharedString, UniformListScrollHandle, WeakEntity, Window, WindowControlArea,
     canvas, div, px, uniform_list,
 };
 use gpui_kit::component::input::{InputEvent, InputState};
@@ -2205,7 +2205,7 @@ impl NotesPage {
         // the tree is the inner scrollable of the list pane: when a wheel
         // event moves it, it is consumed here, so nothing outside — today or
         // after a later restack — reacts to the same event
-        .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
+        .on_scroll(cx.listener(|this, event: &ScrollEvent, window, cx| {
             let state = this.tree_scroll.0.borrow();
             let (offset, max) = (state.base_handle.offset(), state.base_handle.max_offset());
             if wheel_reaches_content(offset, max, event.delta.pixel_delta(window.line_height()).y) {
@@ -2481,7 +2481,7 @@ impl NotesPage {
             // the editor scrolls on every wheel over its surface (its own
             // handler, scrollbar included) and never chains past its edge —
             // so the event ends here instead of reaching anything outside
-            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .on_scroll(|_, _, cx| cx.stop_propagation())
             .child(self.editor_element(cx))
             .into_any_element()
     }
