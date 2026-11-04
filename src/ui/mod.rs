@@ -21,6 +21,31 @@ pub fn window_button(
     show_tooltip: bool,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl gpui::IntoElement {
+    window_button_glyph(
+        id,
+        hover_bg,
+        tooltip,
+        show_tooltip,
+        on_click,
+        icon(
+            icon_path,
+            px(crate::theme::icon_medium()),
+            crate::theme::text_muted(),
+        )
+        .into_any_element(),
+    )
+}
+
+/// [`window_button`] carrying a prepared glyph: the zoom button passes the
+/// kit's window-state glyph so the family's maximize/restore reads alike.
+pub fn window_button_glyph(
+    id: &'static str,
+    hover_bg: gpui::Hsla,
+    tooltip: &'static str,
+    show_tooltip: bool,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+    glyph: gpui::AnyElement,
+) -> impl gpui::IntoElement {
     div()
         .id(id)
         .debug_selector(move || id.into())
@@ -40,9 +65,5 @@ pub fn window_button(
         .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(on_click)
         .when(show_tooltip, |d| d.tooltip(tooltip_text(tooltip)))
-        .child(icon(
-            icon_path,
-            px(crate::theme::icon_medium()),
-            crate::theme::text_muted(),
-        ))
+        .child(glyph)
 }

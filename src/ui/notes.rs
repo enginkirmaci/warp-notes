@@ -1621,13 +1621,8 @@ impl NotesPage {
                         SHOW_TOOLTIPS,
                         |_, window, _| window.minimize_window(),
                     ))
-                    .child(crate::ui::window_button(
+                    .child(crate::ui::window_button_glyph(
                         "notes-zoom",
-                        if window.is_maximized() {
-                            "icons/icon-window-restore.svg"
-                        } else {
-                            "icons/icon-window-maximize.svg"
-                        },
                         theme::raised().into(),
                         if window.is_maximized() {
                             "Restore"
@@ -1641,6 +1636,7 @@ impl NotesPage {
                             // re-render so the maximize/restore glyph keeps up
                             cx.notify();
                         }),
+                        shell::zoom_glyph(window.is_maximized(), theme::text_muted()),
                     ))
                     .child(crate::ui::window_button(
                         "notes-close",
