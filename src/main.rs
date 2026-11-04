@@ -54,23 +54,15 @@ fn main() {
     application()
         .with_assets(assets::EmbedAssets::new())
         .run(|cx: &mut App| {
-            // kit components (input decorations, popovers) + our palette mapped
-            // onto their theme tokens — must run before any kit component renders
-            gpui_kit::init(cx);
+            warpui_kit_core::bootstrap::init(cx, None, false, |cx: &mut gpui::App| {
+                theme::apply_kit_theme(cx);
+            });
             // the editor's find bar; no key context, so no input swallows it
             cx.bind_keys([gpui::KeyBinding::new(
                 "ctrl-f",
                 warp_notes::ui::notes::OpenFind,
                 None,
             )]);
-            warpui_kit_core::adopt_text_size(None);
-            warpui_kit_core::adopt_palette(None);
-            warpui_kit_core::follow_palette(|cx: &mut gpui::App| {
-                theme::apply_kit_theme(cx);
-                cx.refresh_windows();
-            });
-            theme::apply_kit_theme(cx);
-            warpui_kit_core::follow_ui_scale(cx, theme::apply_kit_theme);
 
             let bounds = Bounds::centered(None, size(px(1500.), px(960.)), cx);
             let launch = parse_launch();
