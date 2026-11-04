@@ -1,0 +1,14 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "cargo build (warp-notes)",
+            "type": "shell",
+            "command": "cargo",
+            "args": ["build"],
+            "options": { "cwd": "${workspaceFolder}" },
+            "group": { "kind": "build", "isDefault": true },
+            "problemMatcher": "$rustc"
+        }
+    ]
+}

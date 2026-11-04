@@ -1,0 +1,40 @@
+{
+    // "type" cannot be platform-specific in launch.json, so each OS gets its
+    // own config; F5 reuses the last-selected config per machine.
+    // CodeLLDB (vadimcn.vscode-lldb) wedges at the NVIDIA Vulkan ICD dlopen
+    // under its solib handler — kept for reference only.
+    // Windows: the cargo target dir lives on C: (see ~/.cargo/config.toml)
+    // because Z: is an SMB share; do not point it at ${workspaceFolder}/target.
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Rust: warp-notes (Windows — cppvsdbg)",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${userHome}/.cargo-targets/warp-notes/debug/warp-notes.exe",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "preLaunchTask": "cargo build (warp-notes)"
+        },
+        {
+            // webfreak.debug uses non-standard field names: "target" (not
+            // "program") and "arguments" (a string, not "args") — a missing
+            // "target" crashes the adapter with ERR_INVALID_ARG_TYPE.
+            "name": "Rust: warp-notes (Linux — gdb)",
+            "type": "gdb",
+            "request": "launch",
+            "target": "${workspaceFolder}/../../.build/target/debug/warp-notes",
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "cargo build (warp-notes)"
+        },
+        {
+            "name": "Rust: warp-notes (lldb — wedges on NVIDIA)",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/../../.build/target/debug/warp-notes",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "cargo build (warp-notes)"
+        }
+    ]
+}
