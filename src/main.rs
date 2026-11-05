@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 /// The launch contract: `warp-notes [--store <path>] [--repo <name>]
 /// [--note <path>]`. DevTools passes all three; a bare launch roots at
-/// ~/.warp/notes with nothing pinned. Unknown args are ignored so a stale
+/// ~/notes with nothing pinned. Unknown args are ignored so a stale
 /// desktop shortcut never blocks the window.
 fn parse_launch() -> Launch {
     let mut launch = Launch::default();
@@ -41,6 +41,9 @@ fn parse_launch() -> Launch {
 }
 
 fn main() {
+    // the data folder moved under ~/.warp and the store to ~/notes: absorb
+    // the legacy folders before logging picks its file
+    paths::migrate_legacy_layout();
     let _log_guard = logging::initialize();
     // crashes reach the rolling log (the warp-agent services::install_panic_hook pattern)
     let default_hook = std::panic::take_hook();
@@ -48,8 +51,6 @@ fn main() {
         tracing::error!("panic: {info}");
         default_hook(info);
     }));
-    // the shared store moves out of ~/.devtools once, on whoever runs first
-    paths::migrate_legacy_store();
 
     application()
         .with_assets(assets::EmbedAssets::new())

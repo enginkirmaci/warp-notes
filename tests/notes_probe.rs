@@ -13,12 +13,12 @@ use gpui::{
 use std::path::PathBuf;
 
 fn seed_notes(home: &std::path::Path) {
-    let notes = home.join(".warp/notes/alpha");
+    let notes = home.join("notes/alpha");
     std::fs::create_dir_all(&notes).unwrap();
     std::fs::write(notes.join("note.md"), "# Note\n\nHello **world**.\n").unwrap();
     std::fs::write(notes.join("task.md"), "- [ ] alpha task\nplain\n").unwrap();
     std::fs::write(notes.join("list.md"), "- alpha\n").unwrap();
-    let beta = home.join(".warp/notes/beta");
+    let beta = home.join("notes/beta");
     std::fs::create_dir_all(&beta).unwrap();
     std::fs::write(beta.join("beta.md"), "# Beta\n").unwrap();
 }
@@ -59,9 +59,10 @@ fn temp_home(prefix: &str) -> PathBuf {
 }
 
 /// The scenario's prefs live inside its own temp home: a relaunch inside the
-/// scenario reads them back, and the developer's own ~/.warp-notes file is
-/// neither read nor rewritten by a test run. Scenarios serialize on the home
-/// lock, so the global override never crosses between them.
+/// scenario reads them back, and the developer's own
+/// ~/.warp/notes/settings.json is neither read nor rewritten by a test run.
+/// Scenarios serialize on the home lock, so the global override never crosses
+/// between them.
 fn point_prefs_at(home: &std::path::Path) {
     set_prefs_file_for_probe(Some(home.join("settings.json")));
 }
@@ -89,7 +90,7 @@ fn repo_scope_up_button_tree_and_live_editor(cx: &mut TestAppContext) {
     let (handle, page) = open_page(
         cx,
         Launch {
-            store_root: Some(home.join(".warp/notes")),
+            store_root: Some(home.join("notes")),
             repo_scope: Some("alpha".into()),
             open_note: None,
         },
@@ -310,7 +311,7 @@ fn opening_a_note_puts_the_keyboard_in_the_editor(cx: &mut TestAppContext) {
     let (handle, page) = open_page(
         cx,
         Launch {
-            store_root: Some(home.join(".warp/notes")),
+            store_root: Some(home.join("notes")),
             repo_scope: Some("alpha".into()),
             open_note: None,
         },
@@ -337,7 +338,7 @@ fn following_a_wikilink_opens_or_creates_the_note(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     cx.update(theme::apply_kit_theme);
     let home = temp_home("warpnotes-probe-wiki");
-    let notes = home.join(".warp/notes/alpha");
+    let notes = home.join("notes/alpha");
     std::fs::write(
         notes.join("links.md"),
         "see [[list]] and [[Brand New]]\n\nend",
@@ -346,7 +347,7 @@ fn following_a_wikilink_opens_or_creates_the_note(cx: &mut TestAppContext) {
     let (handle, page) = open_page(
         cx,
         Launch {
-            store_root: Some(home.join(".warp/notes")),
+            store_root: Some(home.join("notes")),
             repo_scope: Some("alpha".into()),
             open_note: Some(PathBuf::from("alpha/links.md")),
         },
@@ -428,7 +429,7 @@ fn note_arg_opens_the_requested_note(cx: &mut TestAppContext) {
     let (handle, page) = open_page(
         cx,
         Launch {
-            store_root: Some(home.join(".warp/notes")),
+            store_root: Some(home.join("notes")),
             repo_scope: None,
             open_note: Some(PathBuf::from("beta/beta.md")),
         },
@@ -488,7 +489,7 @@ fn paste_probe(tcx: &mut TestAppContext, prefix: &str) -> PasteProbe {
     let (handle, page) = open_page(
         tcx,
         Launch {
-            store_root: Some(home.join(".warp/notes")),
+            store_root: Some(home.join("notes")),
             repo_scope: Some("alpha".into()),
             open_note: None,
         },
@@ -544,7 +545,7 @@ fn pasting_a_clipboard_image_saves_an_asset_and_inserts_a_ref(tcx: &mut TestAppC
         assert!(page.is_dirty(cx), "pasting marks the note dirty");
     });
 
-    let assets = probe.home.join(".warp/notes/alpha/assets");
+    let assets = probe.home.join("notes/alpha/assets");
     let mut entries: Vec<PathBuf> = std::fs::read_dir(&assets)
         .expect("the assets folder is created next to the note")
         .map(|entry| entry.unwrap().path())
@@ -590,7 +591,7 @@ fn pasting_text_never_writes_an_asset(tcx: &mut TestAppContext) {
         );
     });
     assert!(
-        !probe.home.join(".warp/notes/alpha/assets").exists(),
+        !probe.home.join("notes/alpha/assets").exists(),
         "text paste writes no asset folder"
     );
 
@@ -625,7 +626,7 @@ fn a_mixed_clipboard_pastes_text_not_image(tcx: &mut TestAppContext) {
         );
     });
     assert!(
-        !probe.home.join(".warp/notes/alpha/assets").exists(),
+        !probe.home.join("notes/alpha/assets").exists(),
         "mixed paste writes no asset folder"
     );
 
@@ -650,9 +651,9 @@ fn ctrl_f_opens_find_and_selects_the_first_match(cx: &mut TestAppContext) {
     let (handle, page) = open_page(
         cx,
         Launch {
-            store_root: Some(home.join(".warp/notes")),
+            store_root: Some(home.join("notes")),
             repo_scope: None,
-            open_note: Some(home.join(".warp/notes/alpha/note.md")),
+            open_note: Some(home.join("notes/alpha/note.md")),
         },
     );
     let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
@@ -700,7 +701,7 @@ fn a_large_store_lays_out_only_the_visible_rows(cx: &mut TestAppContext) {
 
     let home = std::env::temp_dir().join(format!("warpnotes-probe-large-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
-    let notes = home.join(".warp/notes/alpha");
+    let notes = home.join("notes/alpha");
     std::fs::create_dir_all(&notes).unwrap();
     point_prefs_at(&home);
     // 2000 notes: comfortably more than a viewport can show
@@ -711,7 +712,7 @@ fn a_large_store_lays_out_only_the_visible_rows(cx: &mut TestAppContext) {
     let (handle, _page) = open_page(
         cx,
         Launch {
-            store_root: Some(home.join(".warp/notes")),
+            store_root: Some(home.join("notes")),
             repo_scope: Some("alpha".into()),
             open_note: None,
         },
@@ -758,7 +759,7 @@ fn search_sits_in_the_titlebar_and_caps_its_popup(cx: &mut TestAppContext) {
 
     let home = std::env::temp_dir().join(format!("warpnotes-probe-hits-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
-    let notes = home.join(".warp/notes/alpha");
+    let notes = home.join("notes/alpha");
     std::fs::create_dir_all(&notes).unwrap();
     point_prefs_at(&home);
     // every file matches the term, by name and by body
@@ -773,7 +774,7 @@ fn search_sits_in_the_titlebar_and_caps_its_popup(cx: &mut TestAppContext) {
     let (handle, page) = open_page(
         cx,
         Launch {
-            store_root: Some(home.join(".warp/notes")),
+            store_root: Some(home.join("notes")),
             repo_scope: Some("alpha".into()),
             open_note: None,
         },
@@ -871,7 +872,7 @@ fn status_counts_are_cached_until_the_text_changes(cx: &mut TestAppContext) {
     let (handle, page) = open_page(
         cx,
         Launch {
-            store_root: Some(home.join(".warp/notes")),
+            store_root: Some(home.join("notes")),
             repo_scope: Some("alpha".into()),
             open_note: None,
         },
@@ -918,7 +919,7 @@ fn edits_autosave_after_the_debounce(cx: &mut TestAppContext) {
     let (handle, _page) = open_page(
         cx,
         Launch {
-            store_root: Some(home.join(".warp/notes")),
+            store_root: Some(home.join("notes")),
             repo_scope: Some("alpha".into()),
             open_note: None,
         },
@@ -928,7 +929,7 @@ fn edits_autosave_after_the_debounce(cx: &mut TestAppContext) {
     cx.update(|window, cx| drop(window.draw(cx)));
     click(cx, "note-item-note.md");
 
-    let note = home.join(".warp/notes/alpha/note.md");
+    let note = home.join("notes/alpha/note.md");
     let on_disk = std::fs::read_to_string(&note).unwrap();
     let live = bounds(cx, "notes-live").expect("the live editor renders");
     cx.simulate_click(
@@ -970,7 +971,7 @@ fn a_relaunch_restores_the_arranged_ui(cx: &mut TestAppContext) {
     cx.update(theme::apply_kit_theme);
     let home = temp_home("warpnotes-probe-restore");
     let launch = Launch {
-        store_root: Some(home.join(".warp/notes")),
+        store_root: Some(home.join("notes")),
         repo_scope: Some("alpha".into()),
         open_note: None,
     };

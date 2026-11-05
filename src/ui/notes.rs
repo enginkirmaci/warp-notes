@@ -44,7 +44,7 @@ enum Section {
 }
 
 /// The launch configuration the CLI parsed: the store root (DevTools passes
-/// the resolved `notes_store_path`; standalone defaults to ~/.warp/notes),
+/// the resolved `notes_store_path`; standalone defaults to ~/notes),
 /// an optional pinned repo scope and an optional note to open right away.
 #[derive(Clone, Debug, Default)]
 pub struct Launch {
@@ -103,7 +103,7 @@ struct TextStats {
 }
 
 pub struct NotesPage {
-    /// The notes store root: --store when given, else ~/.warp/notes.
+    /// The notes store root: --store when given, else ~/notes.
     pub(crate) store_root: PathBuf,
     /// The tree's pinned scope: None roots at the whole notes store (one
     /// folder per repo), Some at one repo's notes folder. Fixed after launch

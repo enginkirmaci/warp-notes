@@ -1,4 +1,4 @@
-//! The window's remembered bits, kept in `~/.warp-notes/settings.json` so
+//! The window's remembered bits, kept in `~/.warp/notes/settings.json` so
 //! they survive restarts: the list width, the reduce-motion choice, and every
 //! user-arranged piece of the shell — the open rail section, the list pane's
 //! visibility, which note was open and which folders were expanded, and the

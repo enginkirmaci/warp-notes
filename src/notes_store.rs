@@ -1,5 +1,5 @@
 //! The per-repo notes store: one subfolder per repository under the store
-//! root (default ~/.warp/notes), markdown files only. Tree loading and CRUD
+//! root (default ~/notes), markdown files only. Tree loading and CRUD
 //! with sanitized names; the read/search half and the name sanitizer are the
 //! platform kit's (`warpui_kit_platform::notes`, shared with
 //! warp-station-core over the same on-disk format), the markdown editing ops

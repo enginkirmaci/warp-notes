@@ -6,12 +6,13 @@ from DevTools into its own repo. Rust/GPUI (gpui-kit 0.7), one crate.
 
 ## What it does
 
-- One notes store on disk: `~/.warp/notes`, one subfolder per repository.
-  A legacy `~/.devtools/notes` store is renamed over on first run.
+- One notes store on disk: `~/notes`, one subfolder per repository. A store
+  an older release kept in `~/.warp/notes` (or the even older
+  `~/.devtools/notes`) moves there on first run.
 - The family shell: a rail (Notes, Settings), the note tree in the list pane and
   one live editor in the detail pane; Settings holds the store path, the shared
   text size, the Copper palette/typeface and reduce motion (the list width and
-  the motion choice persist in `~/.warp-notes/settings.json`).
+  the motion choice persist in `~/.warp/notes/settings.json`).
 - Folder/file tree, capped full-text search, dirty-buffer-safe navigation.
 - A single live editor that works like Obsidian's live preview: markdown
   renders in place while typing with its syntax hidden until the caret touches
@@ -30,7 +31,7 @@ from DevTools into its own repo. Rust/GPUI (gpui-kit 0.7), one crate.
 warp-notes [--store <path>] [--repo <name>] [--note <path>]
 ```
 
-- `--store` — the notes store root; default `~/.warp/notes`. DevTools passes
+- `--store` — the notes store root; default `~/notes`. DevTools passes
   its resolved `notes_store_path` setting.
 - `--repo` — pin the tree to one repository's notes folder (the titlebar's
   up button climbs back to the whole store).

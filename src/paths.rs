@@ -1,79 +1,58 @@
-//! Global per-user locations: rolling logs under ~/.warp-notes, the notes
-//! store at ~/.warp/notes — the shared store every warp app reads. On first
-//! run a legacy ~/.devtools/notes store is renamed over, so existing notes
-//! survive the move.
+//! Global per-user locations: the notes store is user content at `~/notes`
+//! (one folder per repository, shared with Warp Station), the app's own
+//! settings live with the other apps' data in `~/.warp/notes`, and the
+//! rolling logs go to the suite's shared `~/.warp/logs`. On first run the
+//! legacy `~/.warp-notes` folder moves in and a store still at
+//! `~/.warp/notes` (or the older `~/.devtools/notes`) moves to `~/notes`, so
+//! existing notes survive the move.
 
 use std::path::PathBuf;
+use warpui_kit_platform::paths;
 
 pub struct AppPaths;
 
 impl AppPaths {
+    /// The app's own folder, `~/.warp/notes` — settings only; the store
+    /// itself is `~/notes`.
     pub fn config_dir() -> PathBuf {
-        home().join(".warp-notes")
+        paths::app_dir("notes")
     }
 
+    /// The suite's shared logs folder, `~/.warp/logs`.
     pub fn logs_dir() -> PathBuf {
-        Self::config_dir().join("logs")
+        paths::logs_dir()
     }
 }
 
-/// The shared notes store: one subfolder per repository.
+/// The shared notes store: one subfolder per repository, `~/notes`.
 pub fn default_store_root() -> PathBuf {
-    home().join(".warp").join("notes")
+    paths::notes_store_root()
 }
 
-/// One-shot migration of the legacy DevTools store: `~/.devtools/notes` →
-/// `~/.warp/notes` by rename. "Landed" means the target holds content; an
-/// empty target is a leftover from a failed attempt (either app creates the
-/// empty store after a failed rename), so it is dropped and the rename
-/// retried — otherwise one early failure would strand the notes in
-/// ~/.devtools forever. A rename that still fails leaves both sides intact.
+/// The layout this build writes, adopted from the previous one: the logs move
+/// into the shared folder, the legacy `~/.warp-notes` folder becomes the
+/// app's settings folder, and note content still in `~/.warp/notes` or
+/// `~/.devtools/notes` moves to `~/notes`. Every step is idempotent, so this
+/// runs on every start.
+pub fn migrate_legacy_layout() {
+    // the store moves first: it frees the `~/.warp/notes` name for the app's
+    // own folder adopted right after
+    migrate_legacy_store();
+    paths::adopt_legacy_logs(&legacy_dir().join("logs"));
+    paths::adopt_legacy_dir(&legacy_dir(), &AppPaths::config_dir());
+}
+
+/// Move note content older builds kept in `~/.warp/notes` (and the even older
+/// `~/.devtools/notes`) into the store at `~/notes`. A name collision keeps
+/// both sides — notes are never overwritten or deleted.
 pub fn migrate_legacy_store() {
-    let legacy = home().join(".devtools").join("notes");
-    if !legacy.is_dir() {
-        return;
-    }
-    let target = default_store_root();
-    if target.is_dir()
-        && std::fs::read_dir(&target).is_ok_and(|mut entries| entries.next().is_some())
-    {
-        return;
-    }
-    if target.is_dir()
-        && let Err(err) = std::fs::remove_dir(&target)
-    {
-        tracing::warn!(
-            "could not clear the empty store {}: {err}",
-            target.display()
-        );
-        return;
-    }
-    if let Some(parent) = target.parent()
-        && let Err(err) = std::fs::create_dir_all(parent)
-    {
-        tracing::warn!("could not create {}: {err}", parent.display());
-        return;
-    }
-    match std::fs::rename(&legacy, &target) {
-        Ok(()) => tracing::info!(
-            "migrated the notes store {} → {}",
-            legacy.display(),
-            target.display()
-        ),
-        Err(err) => tracing::warn!(
-            "could not migrate the legacy notes store {}: {err}",
-            legacy.display()
-        ),
-    }
+    paths::adopt_notes_store(&paths::home().join(".devtools").join("notes"));
+    paths::adopt_notes_store(&paths::suite_root().join("notes"));
 }
 
-fn home() -> PathBuf {
-    std::env::var_os("HOME")
-        .filter(|h| !h.is_empty())
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .filter(|h| !h.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
+/// The folder this app owned before the suite layout: `~/.warp-notes`.
+fn legacy_dir() -> PathBuf {
+    paths::home().join(".warp-notes")
 }
 
 #[cfg(test)]
@@ -81,11 +60,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_store_is_under_home_warp() {
-        // shape only: the shared store stays $HOME/.warp/notes on every OS
-        assert!(
-            default_store_root().ends_with(".warp/notes")
-                || default_store_root().ends_with(r".warp\notes")
-        );
+    fn the_store_is_home_notes_and_not_the_app_folder() {
+        assert_eq!(default_store_root(), paths::home().join("notes"));
+        assert_ne!(default_store_root(), AppPaths::config_dir());
+        assert_eq!(AppPaths::config_dir(), paths::suite_root().join("notes"));
+        assert_eq!(AppPaths::logs_dir(), paths::suite_root().join("logs"));
+    }
+
+    #[test]
+    fn the_legacy_folder_keeps_its_old_name() {
+        assert_eq!(legacy_dir(), paths::home().join(".warp-notes"));
     }
 }
