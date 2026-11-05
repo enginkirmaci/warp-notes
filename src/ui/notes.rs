@@ -1654,9 +1654,17 @@ impl NotesPage {
                                 "Open Warp Station",
                             )
                             .on_click(|_, _, _| {
-                                if let Err(err) = std::process::Command::new("warp-station").spawn()
-                                {
-                                    tracing::warn!("could not launch warp-station: {err}");
+                                // the window outlives this one: reap the child
+                                // on a thread instead of leaving a zombie
+                                match std::process::Command::new("warp-station").spawn() {
+                                    Ok(mut child) => {
+                                        std::thread::spawn(move || {
+                                            let _ = child.wait();
+                                        });
+                                    }
+                                    Err(err) => {
+                                        tracing::warn!("could not launch warp-station: {err}");
+                                    }
                                 }
                             })
                             .when(SHOW_TOOLTIPS, |d| {
