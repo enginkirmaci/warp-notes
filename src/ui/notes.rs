@@ -19,7 +19,7 @@ use gpui::{
 };
 use gpui_kit::component::input::{InputEvent, InputState};
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use warpui_kit_core::{motion, shell};
@@ -140,6 +140,15 @@ pub struct NotesPage {
     /// The on-disk contents of the open note; comparing against the editor
     /// makes the unsaved marker follow every keystroke.
     saved_text: String,
+    /// The on-disk identity at the last read or write. A write whose file no
+    /// longer matches this is a conflict, not a save.
+    saved_meta: Option<notes_core::FileMeta>,
+    /// The open note changed on disk: autosave is paused and the editor head
+    /// offers Reload / Overwrite.
+    conflict: bool,
+    /// Every path whose parked buffer conflicted with the disk, so reopening
+    /// it keeps the conflict instead of autosaving the parked text.
+    conflicts: HashSet<PathBuf>,
     /// The status bar's word/char/line counts and the editor revision they
     /// were computed from: the scan is the length of the note, and the bar
     /// re-renders on every caret move.
@@ -271,6 +280,9 @@ impl NotesPage {
             open_note: None,
             dirty: HashMap::new(),
             saved_text: String::new(),
+            saved_meta: None,
+            conflict: false,
+            conflicts: HashSet::new(),
             text_stats: TextStats::default(),
             stats_revision: None,
             age_cache: None,
@@ -389,20 +401,38 @@ impl NotesPage {
 
     pub(crate) fn open_note(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         // the outgoing note lands on disk right away — saving is automatic,
-        // so navigation never has a dirty note behind it. A failed write
-        // parks the buffer instead; the retry paths (a later open of this
-        // note, or the quit-time flush) still hold it in `dirty`.
+        // so navigation never has a dirty note behind it. A write the disk
+        // moved under is parked as a conflict, never written blind; a failed
+        // write is parked in `dirty` for the retry paths.
         if let Some(current) = self.open_note.clone() {
             let text = self.editor.read(cx).value().to_string();
-            self.dirty.remove(&current);
             if text != self.saved_text {
-                match notes_core::write_note(&current, &text) {
-                    Ok(()) => tracing::info!("saved {}", current.display()),
+                match Self::write_checked(&current, &text, self.saved_meta) {
+                    Ok(true) => {
+                        self.saved_text = text;
+                        self.saved_meta = notes_core::note_meta(&current);
+                        self.dirty.remove(&current);
+                        self.conflicts.remove(&current);
+                        tracing::info!("saved {}", current.display());
+                    }
+                    Ok(false) => {
+                        self.park_conflict(current.clone(), text);
+                        self.notice(
+                            cx,
+                            NoticeKind::Error,
+                            &format!(
+                                "{} changed on disk; the unsaved buffer was kept",
+                                current.display()
+                            ),
+                        );
+                    }
                     Err(err) => {
                         self.dirty.insert(current, text);
                         self.notice(cx, NoticeKind::Error, &format!("note save failed: {err}"));
                     }
                 }
+            } else {
+                self.dirty.remove(&current);
             }
         }
         // a note that cannot be read (non-UTF-8, permissions, deleted
@@ -425,6 +455,10 @@ impl NotesPage {
             .cloned()
             .unwrap_or_else(|| baseline.clone());
         self.saved_text = baseline;
+        self.saved_meta = notes_core::note_meta(&path);
+        // a parked conflict survives reopening the note: autosave stays off
+        // until the user reloads or overwrites on purpose
+        self.conflict = self.conflicts.contains(&path);
         // the bar belongs to the note it was opened on
         self.find_open = false;
         self.find_hits.clear();
@@ -447,6 +481,70 @@ impl NotesPage {
             state.focus(window, cx);
         });
         cx.notify();
+    }
+
+    /// Writes `text` to `path` only while the file still matches `expected`;
+    /// `Ok(false)` means skipped because it changed on disk. No baseline
+    /// (metadata unreadable) keeps the old write-through behavior.
+    fn write_checked(
+        path: &Path,
+        text: &str,
+        expected: Option<notes_core::FileMeta>,
+    ) -> Result<bool, String> {
+        let disk = notes_core::note_meta(path);
+        if notes_core::save_decision(true, disk, expected)
+            == notes_core::SaveDecision::ChangedOnDisk
+        {
+            return Ok(false);
+        }
+        notes_core::write_note(path, text).map_err(|err| err.to_string())?;
+        Ok(true)
+    }
+
+    /// Parks a buffer whose note moved on disk: the text survives navigation
+    /// and the quit-time flush, but autosave never writes it over the note.
+    fn park_conflict(&mut self, path: PathBuf, text: String) {
+        self.dirty.insert(path.clone(), text);
+        self.conflicts.insert(path.clone());
+        if self.open_note.as_ref() == Some(&path) {
+            self.conflict = true;
+        }
+    }
+
+    /// Adopts a successful write as the new baseline.
+    fn adopt_saved(&mut self, path: &Path, text: String) {
+        self.saved_text = text;
+        self.saved_meta = notes_core::note_meta(path);
+        self.dirty.remove(path);
+        self.conflicts.remove(path);
+        self.conflict = false;
+    }
+
+    /// Where a conflicted buffer is kept instead of over its note: the app's
+    /// own data folder, not the notes store (a stray recovery file must not
+    /// show up as a note).
+    fn recovery_path(path: &Path) -> PathBuf {
+        let dir = crate::paths::AppPaths::config_dir().join("recovery");
+        let _ = std::fs::create_dir_all(&dir);
+        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| "note.md".into());
+        let rand = notes_core::paste_rand16();
+        dir.join(format!("{stamp}-{rand:04x}-{name}"))
+    }
+
+    fn park_recovery(path: &Path, text: &str) {
+        let target = Self::recovery_path(path);
+        match notes_core::write_note(&target, text) {
+            Ok(()) => tracing::warn!(
+                "kept the conflicted buffer for {} at {}",
+                path.display(),
+                target.display()
+            ),
+            Err(err) => tracing::warn!("could not keep a recovery copy: {err}"),
+        }
     }
 
     /// A clicked `[[wikilink]]`: the note with that name, next to the open
@@ -500,9 +598,12 @@ impl NotesPage {
 
     /// Writes the open note now. The autosave debounce calls this a second
     /// after the last edit; Ctrl+S (kept for muscle memory) calls it at once.
-    /// An already-saved buffer is not rewritten — the debounce's pending task
-    /// fires after a manual save and finds nothing to do.
+    /// An already-saved buffer is not rewritten, and a buffer whose file
+    /// changed on disk is parked for Reload / Overwrite instead (audit A1).
     fn save_current(&mut self, cx: &mut Context<Self>) {
+        if self.conflict {
+            return;
+        }
         if !self.is_dirty(cx) {
             return;
         }
@@ -510,11 +611,21 @@ impl NotesPage {
             return;
         };
         let text = self.editor.read(cx).value().to_string();
-        match notes_core::write_note(&path, &text) {
-            Ok(()) => {
-                self.dirty.remove(&path);
-                self.saved_text = text;
+        match Self::write_checked(&path, &text, self.saved_meta) {
+            Ok(true) => {
+                self.adopt_saved(&path, text);
                 tracing::info!("saved {}", path.display());
+            }
+            Ok(false) => {
+                self.park_conflict(path.clone(), text);
+                self.notice(
+                    cx,
+                    NoticeKind::Error,
+                    &format!(
+                        "{} changed on disk; choose Reload or Overwrite",
+                        path.display()
+                    ),
+                );
             }
             Err(err) => self.notice(cx, NoticeKind::Error, &format!("note save failed: {err}")),
         }
@@ -526,7 +637,8 @@ impl NotesPage {
     /// a burst of typing saves once, a second after it stops. `set_value`
     /// emits Change too, but an untouched buffer has nothing to write.
     fn schedule_autosave(&mut self, cx: &mut Context<Self>) {
-        if !self.is_dirty(cx) {
+        // an unresolved conflict pauses autosave until the user picks a side
+        if self.conflict || !self.is_dirty(cx) {
             return;
         }
         self.save_epoch += 1;
@@ -543,22 +655,78 @@ impl NotesPage {
     }
 
     /// Writes every unsaved buffer now: the open note's, then any parked by
-    /// an earlier failed save. The close button and app quit call this, so
-    /// the debounce never eats an edit.
+    /// an earlier failed save. A conflicted buffer goes to a recovery copy,
+    /// never over the note it no longer matches. The close button and app
+    /// quit call this, so the debounce never eats an edit.
     fn flush_saves(&mut self, cx: &mut Context<Self>) {
-        if let Some(path) = self.open_note.clone() {
+        let open = self.open_note.clone();
+        if let Some(path) = open.clone() {
             let text = self.editor.read(cx).value().to_string();
-            if text != self.saved_text
-                && let Err(err) = notes_core::write_note(&path, &text)
-            {
-                tracing::warn!("could not save {} on exit: {err}", path.display());
+            if self.conflict || self.conflicts.contains(&path) {
+                Self::park_recovery(&path, &text);
+            } else if text != self.saved_text {
+                // the quit flush is a write like any other: an external edit
+                // that landed since the last autosave must not be clobbered
+                match Self::write_checked(&path, &text, self.saved_meta) {
+                    Ok(true) => tracing::info!("saved {}", path.display()),
+                    Ok(false) => Self::park_recovery(&path, &text),
+                    Err(err) => tracing::warn!("could not save {} on exit: {err}", path.display()),
+                }
             }
         }
         for (path, text) in std::mem::take(&mut self.dirty) {
-            if let Err(err) = notes_core::write_note(&path, &text) {
+            if open.as_ref() == Some(&path) {
+                // the open note (and its conflict copy) was handled above
+                continue;
+            }
+            if self.conflicts.contains(&path) {
+                Self::park_recovery(&path, &text);
+            } else if let Err(err) = notes_core::write_note(&path, &text) {
                 tracing::warn!("could not save {} on exit: {err}", path.display());
             }
         }
+    }
+
+    /// The conflict bar's Reload: drop the local buffer and re-read the note.
+    fn reload_conflicted(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self.open_note.clone() else {
+            return;
+        };
+        match notes_core::read_note(&path) {
+            Ok(text) => {
+                self.saved_text = text.clone();
+                self.saved_meta = notes_core::note_meta(&path);
+                self.dirty.remove(&path);
+                self.conflicts.remove(&path);
+                self.conflict = false;
+                self.save_epoch += 1;
+                self.editor
+                    .update(cx, |state, cx| state.set_value(text.as_str(), window, cx));
+                self.notice(cx, NoticeKind::Info, "note reloaded from disk");
+            }
+            Err(err) => self.notice(
+                cx,
+                NoticeKind::Error,
+                &format!("cannot reload {}: {err}", path.display()),
+            ),
+        }
+        cx.notify();
+    }
+
+    /// The conflict bar's Overwrite: the local buffer wins, deliberately.
+    fn overwrite_conflicted(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.open_note.clone() else {
+            return;
+        };
+        let text = self.editor.read(cx).value().to_string();
+        match notes_core::write_note(&path, &text) {
+            Ok(()) => {
+                self.adopt_saved(&path, text);
+                self.notice(cx, NoticeKind::Info, "note overwritten on disk");
+            }
+            Err(err) => self.notice(cx, NoticeKind::Error, &format!("note save failed: {err}")),
+        }
+        cx.notify();
     }
 
     /// The sidebar search: the walk reads up to 2000 note files, so it is
@@ -1219,6 +1387,9 @@ impl NotesPage {
                                         self.render_editor_head(note_title, dirty, armed, cx),
                                     )
                                 })
+                                .when(self.open_note.is_some() && self.conflict, |column| {
+                                    column.child(self.render_conflict_bar(cx))
+                                })
                                 .when(self.find_open, |column| {
                                     column.child(self.render_find_bar(window, cx))
                                 })
@@ -1734,6 +1905,64 @@ impl NotesPage {
             .into_any_element()
     }
 
+    /// The changed-on-disk bar: autosave is paused until the user picks which
+    /// copy wins. Reload drops the buffer; Overwrite writes it deliberately.
+    fn render_conflict_bar(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let button = |id: &'static str, label: &'static str, color: gpui::Rgba| {
+            div()
+                .id(id)
+                .debug_selector(move || id.into())
+                .a11y_button(label)
+                .cursor_pointer()
+                .h(px(theme::scaled(shell::CONTROL_HEIGHT) - 8.))
+                .px_3()
+                .rounded(px(6.))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .bg(theme::raised())
+                .text_size(px(theme::font_control()))
+                .text_color(color)
+                .hover(|s| s.bg(theme::accent_soft()))
+                .child(label)
+        };
+        div()
+            .id("note-conflict")
+            .debug_selector(|| "note-conflict".into())
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .px_4()
+            .py_2()
+            .bg(theme::tint(theme::DANGER))
+            .border_b_1()
+            .border_color(theme::tint(theme::DANGER))
+            .child(
+                div()
+                    .w_full()
+                    .text_size(px(theme::font_meta()))
+                    .text_color(theme::DANGER)
+                    .child("This note changed on disk. Autosave is paused."),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_2()
+                    .child(button("conflict-reload", "Reload", theme::text()).on_click(
+                        cx.listener(|this, _, window, cx| this.reload_conflicted(window, cx)),
+                    ))
+                    .child(
+                        button("conflict-overwrite", "Overwrite", theme::DANGER)
+                            .on_click(cx.listener(|this, _, _, cx| this.overwrite_conflicted(cx))),
+                    ),
+            )
+            .into_any_element()
+    }
+
     /// The status strip: "N words · N chars · N lines", the unsaved hint,
     /// and "Ln x, Col y".
     ///
@@ -1787,7 +2016,9 @@ impl NotesPage {
             .text_color(theme::text_faint())
             .child(format!("{words} words · {chars} chars · {lines} lines"))
             .child(div().flex_1());
-        if dirty {
+        if self.conflict {
+            strip = strip.child(div().text_color(theme::DANGER).child("Changed on disk"));
+        } else if dirty {
             // saving is automatic: the mark only says the write is still a
             // second of typing silence away
             strip = strip.child(div().text_color(theme::CHANGES).child("Unsaved"));
@@ -2314,7 +2545,15 @@ impl NotesPage {
                             .text_color(theme::text_dim())
                             .child(note_title.clone()),
                     )
-                    .when(dirty, |row| {
+                    .when(self.conflict, |row| {
+                        row.child(
+                            div()
+                                .text_size(px(theme::font_meta()))
+                                .text_color(theme::DANGER)
+                                .child("● changed on disk"),
+                        )
+                    })
+                    .when(dirty && !self.conflict, |row| {
                         row.child(
                             div()
                                 .text_size(px(theme::font_meta()))

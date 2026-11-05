@@ -97,6 +97,49 @@ pub fn read_note(path: &Path) -> anyhow::Result<String> {
     Ok(std::fs::read_to_string(path)?)
 }
 
+/// The on-disk identity of a note at the last read or write: enough to tell
+/// an external edit from our own write without hashing the file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileMeta {
+    pub modified: Option<std::time::SystemTime>,
+    pub len: u64,
+}
+
+/// Current metadata for `path`; None when the file is missing or unreadable.
+pub fn note_meta(path: &Path) -> Option<FileMeta> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some(FileMeta {
+        modified: meta.modified().ok(),
+        len: meta.len(),
+    })
+}
+
+/// What to do before writing an open note, from the editor's dirty flag and
+/// the metadata captured when the note was last read or written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SaveDecision {
+    /// Nothing changed since the last save.
+    NothingToDo,
+    /// The disk still matches the baseline: the write is safe.
+    Write,
+    /// The file changed (or vanished) underneath us: never overwrite blind.
+    ChangedOnDisk,
+}
+
+/// The conflict policy, isolated so it is unit-testable: a note we have no
+/// baseline for is written (we cannot know better), a clean buffer never
+/// writes, and a dirty buffer writes only while the file still matches the
+/// metadata our text was based on.
+pub fn save_decision(dirty: bool, disk: Option<FileMeta>, saved: Option<FileMeta>) -> SaveDecision {
+    if !dirty {
+        return SaveDecision::NothingToDo;
+    }
+    match saved {
+        Some(saved) if disk != Some(saved) => SaveDecision::ChangedOnDisk,
+        _ => SaveDecision::Write,
+    }
+}
+
 /// BOM-less UTF-8 — a BOM shows up as stray bytes in git diffs.
 pub fn write_note(path: &Path, content: &str) -> anyhow::Result<()> {
     crate::atomic_write::write_atomically(path, content)
@@ -148,7 +191,7 @@ pub fn insert_image_asset(folder: &Path, ext: &str, bytes: &[u8]) -> std::io::Re
 
 /// Four hex digits of per-call entropy — `RandomState` seeds are random per
 /// instance, so no `rand` dependency and same-second pastes still differ.
-fn paste_rand16() -> u16 {
+pub(crate) fn paste_rand16() -> u16 {
     use std::hash::{BuildHasher, Hasher};
     let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
     hasher.write_u32(
@@ -229,6 +272,37 @@ fn plain_path(path: PathBuf) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn save_decision_never_overwrites_a_changed_file() {
+        let before = FileMeta {
+            modified: None,
+            len: 10,
+        };
+        let after = FileMeta {
+            modified: None,
+            len: 11,
+        };
+        assert_eq!(
+            save_decision(false, Some(before), Some(before)),
+            SaveDecision::NothingToDo
+        );
+        assert_eq!(
+            save_decision(true, Some(before), Some(before)),
+            SaveDecision::Write
+        );
+        assert_eq!(
+            save_decision(true, Some(after), Some(before)),
+            SaveDecision::ChangedOnDisk
+        );
+        // deleted underneath the editor: do not recreate it silently
+        assert_eq!(
+            save_decision(true, None, Some(before)),
+            SaveDecision::ChangedOnDisk
+        );
+        // no baseline (metadata unreadable) leaves the old write-through
+        assert_eq!(save_decision(true, Some(before), None), SaveDecision::Write);
+    }
 
     #[test]
     fn tree_load_and_search_roundtrip() {

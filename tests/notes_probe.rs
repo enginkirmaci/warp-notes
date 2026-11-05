@@ -961,6 +961,98 @@ fn edits_autosave_after_the_debounce(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+/// A note changed externally is never overwritten by autosave: the conflict
+/// bar offers Reload / Overwrite, and only Overwrite replaces the disk copy
+/// (audit A1).
+#[gpui::test]
+fn an_external_edit_becomes_a_conflict_not_a_silent_overwrite(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-conflict");
+    let note = home.join("notes/alpha/note.md");
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: Some(note.clone()),
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    let live = bounds(cx, "notes-live").expect("the live editor renders");
+    cx.simulate_click(
+        Point::new(
+            live.origin.x + live.size.width / 2.,
+            live.origin.y + live.size.height / 2.,
+        ),
+        Modifiers::default(),
+    );
+    cx.run_until_parked();
+    cx.simulate_input("typed locally");
+    cx.run_until_parked();
+
+    // an editor outside the app writes the same note
+    std::fs::write(&note, "# Note\n\nEXTERNAL\n").unwrap();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(2));
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    assert_eq!(
+        std::fs::read_to_string(&note).unwrap(),
+        "# Note\n\nEXTERNAL\n",
+        "autosave must not overwrite the external copy"
+    );
+    assert!(
+        bounds(cx, "note-conflict").is_some(),
+        "the conflict bar must offer a choice"
+    );
+    assert!(
+        page.read_with(cx, |page, cx| page.is_dirty(cx)),
+        "the local buffer stays unsaved"
+    );
+
+    eprintln!(
+        "before overwrite: bounds={:?} disk={:?}",
+        bounds(cx, "conflict-overwrite"),
+        std::fs::read_to_string(&note)
+    );
+    click(cx, "conflict-overwrite");
+    eprintln!("after overwrite: disk={:?}", std::fs::read_to_string(&note));
+    assert!(
+        std::fs::read_to_string(&note)
+            .unwrap()
+            .contains("typed locally"),
+        "Overwrite is the deliberate path that replaces the disk copy"
+    );
+    assert!(bounds(cx, "note-conflict").is_none());
+    assert!(!page.read_with(cx, |page, cx| page.is_dirty(cx)));
+
+    // ...and Reload drops the local buffer instead
+    cx.simulate_input(" again");
+    cx.run_until_parked();
+    std::fs::write(&note, "# Note\n\nEXTERNAL2\n").unwrap();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(2));
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+    assert!(bounds(cx, "note-conflict").is_some());
+    click(cx, "conflict-reload");
+    assert_eq!(
+        std::fs::read_to_string(&note).unwrap(),
+        "# Note\n\nEXTERNAL2\n",
+        "Reload keeps the disk copy"
+    );
+    assert!(!page.read_with(cx, |page, cx| page.is_dirty(cx)));
+    assert!(bounds(cx, "note-conflict").is_none());
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 /// Everything the user arranges comes back on relaunch: the open note, the
 /// tree's expanded folders, the hidden list pane, the rail's section and the
 /// scope the up button reached.
