@@ -458,6 +458,36 @@ fn note_arg_opens_the_requested_note(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+/// With `--repo` pinned, a relative `--note` is read inside that repo's
+/// folder: `--repo alpha --note note.md` opens `alpha/note.md` (the smoke
+/// test's launch shape, which used to land on "No note open").
+#[gpui::test]
+fn a_relative_note_opens_inside_the_pinned_repo(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-repo-note");
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: Some(PathBuf::from("note.md")),
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+    cx.update(|_, cx| {
+        let value = page.read(cx).editor_value(cx);
+        assert!(
+            value.contains("# Note"),
+            "the repo-relative note opened: {value:?}"
+        );
+    });
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 // ---- image paste ----------------------------------------------------------
 
 /// A valid 1x1 RGBA PNG (magic + IHDR + IDAT + IEND).

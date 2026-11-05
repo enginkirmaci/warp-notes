@@ -308,6 +308,19 @@ impl NotesPage {
         // Contained like every other store path — a stray --note must not
         // reach (or on save, overwrite) a file outside the store.
         if let Some(path) = launch.open_note {
+            // A relative --note is store-relative by contract; with --repo
+            // pinned, the natural reading is inside that repo's folder, so
+            // try it first when the file is there (`--repo demo --note
+            // hello.md` used to fail because it resolved at the store root).
+            let path = if path.is_relative() {
+                page.notes_scope
+                    .as_deref()
+                    .map(|repo| notes_core::repo_notes_root(&page.store_root, repo).join(&path))
+                    .filter(|candidate| candidate.is_file())
+                    .unwrap_or(path)
+            } else {
+                path
+            };
             match notes_core::resolve_note_in_store(&page.store_root, &path) {
                 Ok(path) => {
                     page.expand_to(&path);
