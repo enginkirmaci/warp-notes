@@ -29,25 +29,36 @@ pub fn default_store_root() -> PathBuf {
     paths::notes_store_root()
 }
 
-/// The layout this build writes, adopted from the previous one: the logs move
-/// into the shared folder, the legacy `~/.warp-notes` folder becomes the
-/// app's settings folder, and note content still in `~/.warp/notes` or
-/// `~/.devtools/notes` moves to `~/notes`. Every step is idempotent, so this
-/// runs on every start.
+/// The layout this build writes, adopted from the previous one: the legacy
+/// `~/.warp-notes` folder becomes the app's settings folder (its old store
+/// content included), the logs join the shared folder, and note content moves
+/// to `~/notes`. Every step is idempotent; the store scan itself is one-shot
+/// behind a marker, because `~/.warp/notes` now holds the app's settings.
 pub fn migrate_legacy_layout() {
-    // the store moves first: it frees the `~/.warp/notes` name for the app's
-    // own folder adopted right after
-    migrate_legacy_store();
+    // absorb the old app folder first: it may still hold the pre-suite store,
+    // and the store pass must see those notes (in the app folder, or left in
+    // ~/.warp-notes for name collisions) before it marks the job done
     paths::adopt_legacy_logs(&legacy_dir().join("logs"));
     paths::adopt_legacy_dir(&legacy_dir(), &AppPaths::config_dir());
+    migrate_legacy_store();
 }
 
-/// Move note content older builds kept in `~/.warp/notes` (and the even older
-/// `~/.devtools/notes`) into the store at `~/notes`. A name collision keeps
-/// both sides — notes are never overwritten or deleted.
+/// Move note content older builds kept in `~/.warp/notes`, `~/.warp-notes` and
+/// `~/.devtools/notes` into the store at `~/notes`. The old app folder and the
+/// devtools folder are true store locations and are always absorbed; the suite
+/// folder is the app's own folder now, so it is only scanned until the
+/// one-shot marker says the migration ran (audit C2). A name collision keeps
+/// both sides and leaves the marker unwritten so the next start retries.
 pub fn migrate_legacy_store() {
-    paths::adopt_notes_store(&paths::home().join(".devtools").join("notes"));
-    paths::adopt_notes_store(&paths::suite_root().join("notes"));
+    let devtools = paths::adopt_notes_store(&paths::home().join(".devtools").join("notes"));
+    let legacy_app = paths::adopt_notes_store(&legacy_dir());
+    if paths::notes_store_adopted() {
+        return;
+    }
+    let suite = paths::adopt_notes_store(&paths::suite_root().join("notes"));
+    if devtools && legacy_app && suite {
+        paths::mark_notes_store_adopted();
+    }
 }
 
 /// The folder this app owned before the suite layout: `~/.warp-notes`.

@@ -116,6 +116,59 @@ fn the_old_layout_moves_under_the_suite_root_and_the_store_to_home_notes() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+/// Note content that only ever lived inside the old `~/.warp-notes` folder
+/// (the pre-suite store) reaches `~/notes` on the same run: the legacy folder
+/// is absorbed before the store pass, not after it.
+#[test]
+fn notes_inside_the_old_app_folder_reach_the_store() {
+    let _guard = hold_home();
+    let home = scratch_home("old-app-store");
+    write(home.join(".warp-notes/alpha/note.md"), "# alpha");
+    write(
+        home.join(".warp-notes/settings.json"),
+        r#"{"list_width":400}"#,
+    );
+    let _home = HomeGuard::set(&home);
+
+    warp_notes::paths::migrate_legacy_layout();
+
+    assert_eq!(read(home.join("notes/alpha/note.md")), "# alpha");
+    assert_eq!(
+        read(home.join(".warp/notes/settings.json")),
+        r#"{"list_width":400}"#
+    );
+    assert!(!home.join(".warp-notes").exists());
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// Once the one-shot store migration ran, `~/.warp/notes` is the app's own
+/// folder: a later entry there must stay put instead of being moved into the
+/// user's notes (audit C2).
+#[test]
+fn the_store_migration_is_one_shot() {
+    let _guard = hold_home();
+    let home = scratch_home("one-shot");
+    seed_old_layout(&home);
+    let _home = HomeGuard::set(&home);
+
+    warp_notes::paths::migrate_legacy_layout();
+    assert!(
+        home.join(".warp/.notes-store-v1").is_file(),
+        "the completed migration leaves its marker"
+    );
+
+    // app data (or a future release's cache) appears in the app folder
+    write(home.join(".warp/notes/cache/blob.bin"), "x");
+    warp_notes::paths::migrate_legacy_layout();
+
+    assert!(
+        home.join(".warp/notes/cache/blob.bin").is_file(),
+        "the repurposed app folder is not scanned after the marker"
+    );
+    assert!(!home.join("notes/cache").exists());
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 /// A second launch finds nothing left to move and keeps every path.
 #[test]
 fn a_second_pass_over_a_migrated_home_changes_nothing() {
