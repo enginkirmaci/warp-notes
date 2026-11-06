@@ -31,7 +31,7 @@ impl SettingsSection {
     fn hint(self) -> &'static str {
         match self {
             SettingsSection::General => "Store and text size",
-            SettingsSection::Appearance => "Palette, typeface and motion",
+            SettingsSection::Appearance => "Palette and motion",
         }
     }
 }
@@ -129,9 +129,7 @@ impl NotesPage {
 
         let rows = match active {
             SettingsSection::General => vec![self.store_row(), self.text_row()],
-            SettingsSection::Appearance => {
-                vec![self.palette_row(), self.typeface_row(), self.motion_row(cx)]
-            }
+            SettingsSection::Appearance => vec![self.palette_row(), self.motion_row(cx)],
         };
 
         shell::panes()
@@ -215,19 +213,6 @@ impl NotesPage {
             "Shared by every app in the suite",
             warpui_kit_core::palette_control(),
             true,
-        )
-    }
-
-    fn typeface_row(&mut self) -> gpui::AnyElement {
-        kit::row_with_desc(
-            "settings-row-Typeface",
-            "Typeface",
-            "Interface and code fonts",
-            div()
-                .text_size(px(theme::font_body()))
-                .text_color(theme::text())
-                .child("Inter + JetBrains Mono"),
-            false,
         )
     }
 
