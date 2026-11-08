@@ -18,6 +18,9 @@ from DevTools into its own repo. Rust/GPUI (gpui-kit 0.9), one crate.
   A row's action menu (also on right-click) renames, moves, duplicates,
   creates folders and copies store-relative paths; the tree and the open note
   follow changes made outside the window on refresh or activation.
+- Moving a note or folder to Trash is one action with an Undo toast; Settings
+  → General opens the Trash dialog to restore or empty it. Entries stay for
+  30 days, and there is no permanent delete outside Empty Trash.
 - A single live editor that works like Obsidian's live preview: markdown
   renders in place while typing with its syntax hidden until the caret touches
   it, checkboxes toggle on click, Enter continues lists, links and

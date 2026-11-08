@@ -128,7 +128,7 @@ impl NotesPage {
             );
 
         let rows = match active {
-            SettingsSection::General => vec![self.store_row(), self.text_row()],
+            SettingsSection::General => vec![self.store_row(), self.trash_row(cx), self.text_row()],
             SettingsSection::Appearance => vec![self.palette_row(), self.motion_row(cx)],
         };
 
@@ -200,6 +200,34 @@ impl NotesPage {
             "Text size",
             "Applied right away. The other Warp apps follow when they next open.",
             warpui_kit_core::text_size_control(),
+            false,
+        )
+    }
+
+    fn trash_row(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let count = crate::trash::list_trash(&self.store_root).len();
+        kit::row_with_desc(
+            "settings-row-Trash",
+            "Trash",
+            format!("{count} item(s). Deleted notes stay here for 30 days."),
+            div()
+                .id("settings-trash-open")
+                .debug_selector(|| "settings-trash-open".into())
+                .a11y_button("Open Trash")
+                .cursor_pointer()
+                .rounded(px(6.))
+                .h(px(theme::scaled(shell::CONTROL_HEIGHT) - 8.))
+                .px_3()
+                .flex()
+                .items_center()
+                .bg(theme::raised())
+                .text_size(px(theme::font_control()))
+                .text_color(theme::text_dim())
+                .hover(|style| style.bg(theme::accent_soft()))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.open_trash_dialog(cx);
+                }))
+                .child("Open Trash"),
             false,
         )
     }

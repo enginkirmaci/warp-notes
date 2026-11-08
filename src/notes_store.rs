@@ -335,16 +335,6 @@ pub fn duplicate_note(scope_root: &Path, source: &Path) -> anyhow::Result<PathBu
     anyhow::bail!("no unique copy name was found")
 }
 
-pub fn delete(repo_notes_root: &Path, target: &Path) -> anyhow::Result<()> {
-    ensure_under_root(repo_notes_root, target)?;
-    if target.is_dir() {
-        std::fs::remove_dir_all(target)?;
-    } else if target.is_file() {
-        std::fs::remove_file(target)?;
-    }
-    Ok(())
-}
-
 pub fn search(repo_notes_root: &Path, term: &str) -> Vec<NotesSearchHit> {
     search_capped(repo_notes_root, term, SEARCH_FILE_CAP)
 }

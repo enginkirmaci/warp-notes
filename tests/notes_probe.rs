@@ -1471,6 +1471,181 @@ fn copy_path_writes_the_store_relative_path(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+#[gpui::test]
+fn trash_undo_restores_the_note_and_reopens_it(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-trash-undo");
+    let note = home.join("notes/projects/alpha/note.md");
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    click(cx, "note-item-note.md");
+    click(cx, "note-trash");
+    assert!(!note.exists(), "the live copy is gone");
+    page.read_with(cx, |page, _| {
+        assert_eq!(page.open_note_path(), None);
+    });
+    assert_eq!(cx.window_title().as_deref(), Some("Warp Notes"));
+    assert!(
+        bounds(cx, "notes-toast-action").is_some(),
+        "the toast offers Undo"
+    );
+
+    click(cx, "notes-toast-action");
+    assert_eq!(
+        std::fs::read_to_string(&note).unwrap(),
+        "# Note\n\nHello **world**.\n"
+    );
+    page.read_with(cx, |page, _| {
+        assert_eq!(page.open_note_path(), Some(note.clone()));
+    });
+    assert_eq!(cx.window_title().as_deref(), Some("note.md — Warp Notes"));
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn trashing_a_dirty_note_keeps_its_text_for_undo(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-trash-dirty");
+    let note = home.join("notes/projects/alpha/note.md");
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    click(cx, "note-item-note.md");
+    let live = bounds(cx, "notes-live").expect("the live editor renders");
+    cx.simulate_click(
+        Point::new(
+            live.origin.x + live.size.width / 2.,
+            live.origin.y + live.size.height / 2.,
+        ),
+        Modifiers::default(),
+    );
+    cx.run_until_parked();
+    cx.simulate_input("typed before trash");
+    cx.run_until_parked();
+    click(cx, "note-trash");
+    assert!(!note.exists());
+
+    click(cx, "notes-toast-action");
+    page.read_with(cx, |page, cx| {
+        assert!(page.editor_value(cx).contains("typed before trash"));
+    });
+    assert!(
+        std::fs::read_to_string(&note)
+            .unwrap()
+            .contains("typed before trash")
+    );
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn trash_dialog_restores_and_empties(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-trash-dialog");
+    let alpha = home.join("notes/projects/alpha");
+    let (handle, _page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    click(cx, "note-item-note.md");
+    click(cx, "note-trash");
+    click_str(cx, "note-actions-task.md");
+    click(cx, "notes-menu-trash");
+    assert!(!alpha.join("note.md").exists());
+    assert!(!alpha.join("task.md").exists());
+
+    click(cx, "rail-settings");
+    click(cx, "settings-trash-open");
+    assert!(bounds(cx, "notes-trash-dialog").is_some());
+    click_str(cx, "trash-restore-0");
+    assert!(alpha.join("task.md").is_file(), "the newest entry is back");
+
+    click(cx, "trash-empty");
+    assert!(
+        warp_notes::trash::list_trash(&home.join("notes")).is_empty(),
+        "Empty Trash clears the rest"
+    );
+    click(cx, "trash-close");
+    assert!(bounds(cx, "notes-trash-dialog").is_none());
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn trashing_a_folder_closes_the_note_inside(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-trash-folder");
+    let alpha = home.join("notes/projects/alpha");
+    std::fs::create_dir_all(alpha.join("archive")).unwrap();
+    std::fs::write(alpha.join("archive/inside.md"), "inside").unwrap();
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: Some(alpha.join("archive/inside.md")),
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    click_str(cx, "note-actions-archive");
+    click(cx, "notes-menu-trash");
+    assert!(!alpha.join("archive").exists());
+    page.read_with(cx, |page, _| {
+        assert_eq!(page.open_note_path(), None);
+    });
+
+    click(cx, "notes-toast-action");
+    assert!(alpha.join("archive/inside.md").is_file());
+    page.read_with(cx, |page, _| {
+        assert_eq!(page.open_note_path(), Some(alpha.join("archive/inside.md")));
+    });
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 /// Everything the user arranges comes back on relaunch: the open note, the
 /// tree's expanded folders, the hidden list pane, the rail's section and the
 /// scope the up button reached.

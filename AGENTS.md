@@ -73,8 +73,9 @@ cargo build -p warp-notes
 ```
 
 - `tests/notes_probe.rs` covers the real window: tree, opening a note, the
-  live editor, task checkboxes, list continuation, wikilinks, and the
-  `--repo`/`--root`/`--note` launch contract.
+  live editor, row actions, Trash/Undo and the Trash dialog, task checkboxes,
+  list continuation, wikilinks, and the `--repo`/`--root`/`--note` launch
+  contract.
 - `tests/layout_migration.rs` drives the scratch-HOME migration end to end.
   HOME is process-global, so scenarios take turns behind its lock.
 - The capture hook is `WARP_NOTES_PAGE=settings`.
@@ -99,4 +100,6 @@ cargo build -p warp-notes
 - Add a single-instance guard; multi-instance is the contract.
 - Add a second editor or markdown renderer; the live editor is
   `warpui-kit-markdown`.
+- Add a permanent delete path outside the Trash dialog; removal goes through
+  `<store>/.warp-notes/trash` first.
 - Add a per-app build script or installer; the suite's `scripts/` owns those.

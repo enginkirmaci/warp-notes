@@ -28,6 +28,9 @@ pub const MENU_WIDTH: f32 = 224.;
 /// The rename/move/new-folder prompt card.
 pub const PROMPT_WIDTH: f32 = 420.;
 
+/// The Trash dialog card.
+pub const TRASH_WIDTH: f32 = 620.;
+
 // ---- gpui-kit theme mapping ------------------------------------------------
 
 /// Map the family palette onto gpui-kit's shadcn-style theme tokens. Call

@@ -69,10 +69,19 @@ struct Notice {
     kind: NoticeKind,
     text: String,
     expires: std::time::Instant,
+    action: Option<NoticeAction>,
     /// A counter that moves with every new toast: the entrance animation keys
     /// on it, so a second toast plays its own entrance instead of inheriting
     /// the first one's finished animation (which reads as "no animation").
     seq: u64,
+}
+
+#[derive(Clone)]
+enum NoticeAction {
+    UndoTrash {
+        entry: crate::trash::TrashEntry,
+        reopen: Option<PathBuf>,
+    },
 }
 
 /// An info toast leaves on its own; an error stays longer and carries a close.
@@ -219,8 +228,6 @@ pub struct NotesPage {
     /// The debounced autosave: every edit bumps this, and only the task from
     /// the last edit still holding the epoch writes the note.
     save_epoch: u64,
-    /// Delete arming: (path, expire-instant) — a second click within 3s fires.
-    armed_delete: Option<(PathBuf, std::time::Instant)>,
     /// The "+ note" create form (name + optional folder).
     create_open: bool,
     create_name: Entity<InputState>,
@@ -230,6 +237,8 @@ pub struct NotesPage {
     prompt_input: Entity<InputState>,
     /// The row action menu, anchored where the pointer opened it.
     row_menu: Option<RowMenu>,
+    /// The Trash dialog: list, restore, empty.
+    trash_open: bool,
     /// The transient toast: save/create/delete outcomes, bottom right.
     notice: Option<Notice>,
     /// The next toast's sequence number.
@@ -358,13 +367,13 @@ impl NotesPage {
             find_index: 0,
             editor,
             save_epoch: 0,
-            armed_delete: None,
             create_open: false,
             create_name,
             create_folder,
             prompt: None,
             prompt_input,
             row_menu: None,
+            trash_open: false,
             notice: None,
             notice_seq: 0,
             titlebar_should_move: false,
@@ -1027,13 +1036,28 @@ impl NotesPage {
     /// The bottom-right toast: an error stays longer and carries a close
     /// button; a spawned timer hides it so no user action is needed.
     fn notice(&mut self, cx: &mut Context<Self>, kind: NoticeKind, text: &str) {
-        let ttl = notice_ttl(kind);
+        self.notice_with_action(cx, kind, text, None);
+    }
+
+    fn notice_with_action(
+        &mut self,
+        cx: &mut Context<Self>,
+        kind: NoticeKind,
+        text: &str,
+        action: Option<NoticeAction>,
+    ) {
+        let ttl = if action.is_some() {
+            std::time::Duration::from_secs(8)
+        } else {
+            notice_ttl(kind)
+        };
         let expires = std::time::Instant::now() + ttl;
         self.notice_seq += 1;
         self.notice = Some(Notice {
             kind,
             text: text.to_string(),
             expires,
+            action,
             seq: self.notice_seq,
         });
         cx.spawn(async move |this, cx| {
@@ -1050,39 +1074,139 @@ impl NotesPage {
         cx.notify();
     }
 
-    fn delete_current(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn trash_current(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(path) = self.open_note.clone() else {
             return;
         };
-        let Some(root) = self.notes_root() else {
+        self.trash_path(path, window, cx);
+    }
+
+    /// Moves a note or folder to Trash. The open buffer (or a buffer inside a
+    /// trashed folder) is written or parked as a recovery copy first; a Trash
+    /// failure leaves the editor exactly where it was.
+    fn trash_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(scope) = self.notes_root() else {
             return;
         };
-        match &self.armed_delete {
-            Some((armed, _)) if *armed == path => {
-                match notes_core::delete(&root, &path) {
-                    Ok(()) => {
-                        self.dirty.remove(&path);
-                        self.open_note = None;
-                        self.saved_text.clear();
-                        // the deleted note is nobody's open note any more
-                        self.prefs.open_note = None;
-                        self.prefs.save();
-                        self.refresh_tree(&root);
-                        self.set_note_window_title(window);
+        let open_before = self.open_note.clone();
+        let affected = open_before
+            .as_ref()
+            .is_some_and(|open| open == &path || open.starts_with(&path));
+        if affected && let Some(open) = open_before.clone() {
+            let text = self.editor.read(cx).value().to_string();
+            if self.conflict || self.conflicts.contains(&open) {
+                Self::park_recovery(&open, &text);
+            } else if text != self.saved_text {
+                match Self::write_checked(&open, &text, self.saved_meta) {
+                    Ok(true) => {
+                        self.saved_text = text;
+                        self.saved_meta = notes_core::note_meta(&open);
+                        self.dirty.remove(&open);
                     }
+                    Ok(false) => Self::park_recovery(&open, &text),
                     Err(err) => {
-                        self.notice(cx, NoticeKind::Error, &format!("note delete failed: {err}"))
+                        Self::park_recovery(&open, &text);
+                        tracing::warn!("could not save {} before Trash: {err}", open.display());
                     }
                 }
-                self.armed_delete = None;
-            }
-            _ => {
-                self.armed_delete = Some((
-                    path,
-                    std::time::Instant::now() + std::time::Duration::from_secs(3),
-                ));
             }
         }
+
+        match crate::trash::trash_entry(&self.store_root, &path) {
+            Ok(entry) => {
+                if affected {
+                    self.dirty
+                        .retain(|entry, _| entry != &path && !entry.starts_with(&path));
+                    self.conflicts
+                        .retain(|entry| entry != &path && !entry.starts_with(&path));
+                    self.open_note = None;
+                    self.saved_text.clear();
+                    self.find_open = false;
+                    self.prefs.open_note = None;
+                    self.prefs.save();
+                    self.set_note_window_title(window);
+                }
+                self.expanded.retain(|folder| !folder.starts_with(&path));
+                self.remember_expanded();
+                self.refresh_tree(&scope);
+                self.notice_with_action(
+                    cx,
+                    NoticeKind::Info,
+                    "moved to Trash",
+                    Some(NoticeAction::UndoTrash {
+                        entry,
+                        reopen: affected.then_some(open_before).flatten(),
+                    }),
+                );
+            }
+            Err(err) => self.notice(cx, NoticeKind::Error, &format!("Trash failed: {err}")),
+        }
+        cx.notify();
+    }
+
+    fn undo_trash(
+        &mut self,
+        entry: crate::trash::TrashEntry,
+        reopen: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match crate::trash::restore_entry(&self.store_root, &entry) {
+            Ok(path) => {
+                self.reveal_restored(&path, window, cx);
+                if let Some(open) = reopen
+                    && open.is_file()
+                {
+                    self.open_note(open, window, cx);
+                }
+                self.notice(cx, NoticeKind::Info, "restored from Trash");
+            }
+            Err(err) => self.notice(cx, NoticeKind::Error, &format!("restore failed: {err}")),
+        }
+        cx.notify();
+    }
+
+    fn restore_trash_entry(
+        &mut self,
+        entry: crate::trash::TrashEntry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match crate::trash::restore_entry(&self.store_root, &entry) {
+            Ok(path) => {
+                self.reveal_restored(&path, window, cx);
+                self.notice(cx, NoticeKind::Info, "restored from Trash");
+            }
+            Err(err) => self.notice(cx, NoticeKind::Error, &format!("restore failed: {err}")),
+        }
+        cx.notify();
+    }
+
+    /// Shows a restored path in the tree even when it came back outside the
+    /// current repo pin; the pin is dropped so the tree and the path agree.
+    fn reveal_restored(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        let outside_scope = self
+            .notes_root()
+            .is_some_and(|scope| !path.starts_with(&scope));
+        if outside_scope {
+            self.notes_scope = None;
+            self.prefs.notes_scope = None;
+            self.prefs.save();
+            self.tree_loaded_for = None;
+        }
+        if let Some(scope) = self.notes_root() {
+            self.refresh_tree(&scope);
+        }
+        self.expand_to(path);
+        self.remember_expanded();
+        self.set_note_window_title(window);
+        cx.notify();
+    }
+
+    pub(crate) fn open_trash_dialog(&mut self, cx: &mut Context<Self>) {
+        self.row_menu = None;
+        self.prompt = None;
+        self.trash_open = true;
         cx.notify();
     }
 
@@ -1576,6 +1700,13 @@ fn store_relative(store_root: &Path, path: &Path) -> String {
         .replace('\\', "/")
 }
 
+fn now_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|age| age.as_millis())
+        .unwrap_or(0)
+}
+
 fn rewrite_path(path: &Path, old: &Path, new: &Path) -> PathBuf {
     if path == old {
         return new.to_path_buf();
@@ -1621,6 +1752,28 @@ fn menu_item(
         .text_size(px(theme::font_body()))
         .text_color(theme::text_dim())
         .hover(|style| style.bg(theme::raised()).text_color(theme::text()))
+        .on_click(on_click)
+        .child(label)
+        .into_any_element()
+}
+
+fn menu_item_danger(
+    id: &'static str,
+    label: impl Into<SharedString>,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> gpui::AnyElement {
+    let label: SharedString = label.into();
+    div()
+        .id(id)
+        .debug_selector(move || id.into())
+        .a11y_button(label.clone())
+        .cursor_pointer()
+        .rounded(px(6.))
+        .px_2()
+        .py_1p5()
+        .text_size(px(theme::font_body()))
+        .text_color(theme::DANGER)
+        .hover(|style| style.bg(theme::tint(theme::DANGER)))
         .on_click(on_click)
         .child(label)
         .into_any_element()
@@ -1674,13 +1827,6 @@ impl Render for NotesPage {
         // re-copy its whole text every keystroke
         let editor_text = self.editor.read(cx).value();
         let dirty = self.open_note.is_some() && editor_text.as_ref() != self.saved_text.as_str();
-        let armed = self
-            .armed_delete
-            .as_ref()
-            .map(|(path, deadline)| {
-                Some(path) == self.open_note.as_ref() && *deadline > std::time::Instant::now()
-            })
-            .unwrap_or(false);
         let note_title = self
             .open_note
             .as_ref()
@@ -1757,7 +1903,7 @@ impl Render for NotesPage {
                     .flex()
                     .flex_row()
                     .child(self.render_rail(cx))
-                    .child(self.render_body(note_title, dirty, armed, window, cx)),
+                    .child(self.render_body(note_title, dirty, window, cx)),
             )
             .relative();
         // the search results float over the panes, under the title bar field
@@ -1772,6 +1918,9 @@ impl Render for NotesPage {
         }
         if let Some(prompt) = self.prompt.clone() {
             root = root.child(self.render_prompt(window, cx, prompt));
+        }
+        if self.trash_open {
+            root = root.child(self.render_trash_dialog(window, cx));
         }
         root
     }
@@ -1838,7 +1987,6 @@ impl NotesPage {
         &mut self,
         note_title: String,
         dirty: bool,
-        armed: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
@@ -1869,9 +2017,7 @@ impl NotesPage {
                                 .when(self.open_note.is_some(), |column| {
                                     // the head is the open file's name; with
                                     // nothing open the empty state speaks
-                                    column.child(
-                                        self.render_editor_head(note_title, dirty, armed, cx),
-                                    )
+                                    column.child(self.render_editor_head(note_title, dirty, cx))
                                 })
                                 .when(self.open_note.is_some() && self.conflict, |column| {
                                     column.child(self.render_conflict_bar(cx))
@@ -2017,6 +2163,32 @@ impl NotesPage {
                     })
                     .child(notice.text.clone()),
             );
+        if let Some(action) = notice.action.clone() {
+            toast = toast.child(
+                div()
+                    .id("notes-toast-action")
+                    .debug_selector(|| "notes-toast-action".into())
+                    .a11y_button("Undo")
+                    .cursor_pointer()
+                    .flex_shrink_0()
+                    .rounded(px(6.))
+                    .px_2()
+                    .py_0p5()
+                    .text_size(px(theme::font_control()))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme::accent_ink())
+                    .hover(|style| style.bg(theme::raised()))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.notice = None;
+                        match action.clone() {
+                            NoticeAction::UndoTrash { entry, reopen } => {
+                                this.undo_trash(entry, reopen, window, cx);
+                            }
+                        }
+                    }))
+                    .child("Undo"),
+            );
+        }
         if error {
             toast = toast.child(
                 div()
@@ -2166,6 +2338,24 @@ impl NotesPage {
                         this.copy_entry_path(&path, cx);
                     }
                 }),
+            ))
+            .child(menu_item(
+                "notes-menu-trash-dialog",
+                "Trash…",
+                cx.listener(|this, _, _, cx| {
+                    this.open_trash_dialog(cx);
+                }),
+            ))
+            .child(menu_item_danger(
+                "notes-menu-trash",
+                "Move to Trash",
+                cx.listener({
+                    let path = path.clone();
+                    move |this, _, window, cx| {
+                        this.row_menu = None;
+                        this.trash_path(path.clone(), window, cx);
+                    }
+                }),
             ));
         div()
             .id("notes-row-menu-scrim")
@@ -2310,6 +2500,208 @@ impl NotesPage {
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
                     this.prompt = None;
+                    cx.notify();
+                }),
+            )
+            .child(card)
+            .into_any_element()
+    }
+
+    fn render_trash_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let entries = crate::trash::list_trash(&self.store_root);
+        let count = entries.len();
+        let now = now_ms();
+        let mut list = div()
+            .id("trash-list")
+            .debug_selector(|| "trash-list".into())
+            .flex()
+            .flex_col()
+            .gap_1()
+            .max_h(px(360.))
+            .overflow_y_scroll();
+        if entries.is_empty() {
+            list = list.child(
+                div()
+                    .py_4()
+                    .text_size(px(theme::font_body()))
+                    .text_color(theme::text_faint())
+                    .child("Trash is empty."),
+            );
+        }
+        for (index, entry) in entries.iter().enumerate() {
+            let entry = entry.clone();
+            let label = entry.relative();
+            let age = crate::trash::age_label(entry.deleted_at_ms, now);
+            list = list.child(
+                div()
+                    .id(("trash-row", index as u64))
+                    .debug_selector(move || format!("trash-row-{index}"))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .rounded(px(6.))
+                    .px_2()
+                    .py_1p5()
+                    .hover(|style| style.bg(theme::raised()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .font_family(SharedString::from(theme::code_font()))
+                            .text_size(px(theme::font_mono_meta()))
+                            .text_color(theme::text_dim())
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_size(px(theme::font_meta()))
+                            .text_color(theme::text_faint())
+                            .child(age),
+                    )
+                    .child(
+                        div()
+                            .id(("trash-restore", index as u64))
+                            .debug_selector(move || format!("trash-restore-{index}"))
+                            .a11y_button("Restore")
+                            .cursor_pointer()
+                            .flex_shrink_0()
+                            .rounded(px(6.))
+                            .px_2()
+                            .py_0p5()
+                            .text_size(px(theme::font_control()))
+                            .text_color(theme::accent_ink())
+                            .hover(|style| style.bg(theme::raised()))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.restore_trash_entry(entry.clone(), window, cx);
+                            }))
+                            .child("Restore"),
+                    ),
+            );
+        }
+
+        let card = div()
+            .id("notes-trash-dialog")
+            .debug_selector(|| "notes-trash-dialog".into())
+            .role(gpui::Role::Dialog)
+            .occlude()
+            .w(px(theme::TRASH_WIDTH))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(theme::line_strong())
+            .bg(theme::panel())
+            .shadow_lg()
+            .p_4()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                if event.keystroke.key == "escape" {
+                    this.trash_open = false;
+                    cx.notify();
+                    cx.stop_propagation();
+                }
+            }))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(theme::font_screen_title()))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme::text())
+                            .child("Trash"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(theme::font_meta()))
+                            .text_color(theme::text_muted())
+                            .child(format!("{count} item(s)")),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(px(theme::font_meta()))
+                    .text_color(theme::text_muted())
+                    .child("Deleted notes stay here for 30 days, then they are purged."),
+            )
+            .child(list)
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        div()
+                            .id("trash-empty")
+                            .debug_selector(|| "trash-empty".into())
+                            .a11y_button("Empty Trash")
+                            .cursor_pointer()
+                            .rounded(px(6.))
+                            .h(px(theme::scaled(shell::CONTROL_HEIGHT) - 8.))
+                            .px_3()
+                            .flex()
+                            .items_center()
+                            .text_size(px(theme::font_control()))
+                            .text_color(theme::DANGER)
+                            .hover(|style| style.bg(theme::tint(theme::DANGER)))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                crate::trash::empty_trash(&this.store_root);
+                                this.notice(cx, NoticeKind::Info, "Trash emptied");
+                                cx.notify();
+                            }))
+                            .child("Empty Trash"),
+                    )
+                    .child(
+                        div()
+                            .id("trash-close")
+                            .debug_selector(|| "trash-close".into())
+                            .a11y_button("Close Trash")
+                            .cursor_pointer()
+                            .rounded(px(6.))
+                            .h(px(theme::scaled(shell::CONTROL_HEIGHT) - 8.))
+                            .px_3()
+                            .flex()
+                            .items_center()
+                            .bg(theme::accent())
+                            .text_color(theme::on_accent())
+                            .text_size(px(theme::font_control()))
+                            .font_weight(FontWeight::MEDIUM)
+                            .hover(|style| style.opacity(0.9))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.trash_open = false;
+                                cx.notify();
+                            }))
+                            .child("Close"),
+                    ),
+            );
+        let _ = window;
+        div()
+            .id("notes-trash-scrim")
+            .absolute()
+            .inset_0()
+            .occlude()
+            .bg(theme::SCRIM)
+            .flex()
+            .items_center()
+            .justify_center()
+            .p_4()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.trash_open = false;
                     cx.notify();
                 }),
             )
@@ -3250,12 +3642,11 @@ impl NotesPage {
     }
 
     /// The editor's head: the file name in mono, the unsaved mark, Save, and
-    /// Delete (which needs a second click), over the format bar.
+    /// Move to Trash, over the format bar.
     fn render_editor_head(
         &mut self,
         note_title: String,
         dirty: bool,
-        armed: bool,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         // formatting row: fourteen buttons in four groups — text styles and
@@ -3363,15 +3754,10 @@ impl NotesPage {
                     .child(div().flex_1())
                     .when(self.open_note.is_some(), |row| {
                         row.child(
-                            // destructive: the first click arms it, the
-                            // second within 3s fires; anything else disarms
                             div()
-                                .id("note-delete")
-                                .a11y_button(if armed {
-                                    "Confirm delete note"
-                                } else {
-                                    "Delete note"
-                                })
+                                .id("note-trash")
+                                .debug_selector(|| "note-trash".into())
+                                .a11y_button("Move note to Trash")
                                 .cursor_pointer()
                                 .rounded(px(6.))
                                 .h(px(theme::scaled(shell::CONTROL_HEIGHT) - 8.))
@@ -3381,26 +3767,19 @@ impl NotesPage {
                                 .justify_center()
                                 .gap_1p5()
                                 .text_size(px(theme::font_control()))
-                                .when(armed, |d| {
-                                    d.border_1()
-                                        .border_color(theme::tint(theme::DANGER))
-                                        .text_color(theme::DANGER)
-                                        .child("Confirm")
-                                })
-                                .when(!armed, |d| {
-                                    d.text_color(theme::text_faint())
-                                        .hover(|s| s.bg(theme::raised()))
-                                })
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.delete_current(window, cx)
-                                }))
-                                .when(!armed, |d| {
-                                    d.child(icon(
-                                        "icons/icon-trash.svg",
-                                        px(theme::icon_small() - 2.),
-                                        theme::text_faint(),
-                                    ))
-                                }),
+                                .text_color(theme::text_faint())
+                                .hover(|s| s.bg(theme::raised()))
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| {
+                                        this.trash_current(window, cx)
+                                    }),
+                                )
+                                .child(icon(
+                                    "icons/icon-trash.svg",
+                                    px(theme::icon_small() - 2.),
+                                    theme::text_faint(),
+                                ))
+                                .child("Trash"),
                         )
                     }),
             )

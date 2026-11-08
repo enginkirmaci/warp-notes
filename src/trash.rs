@@ -41,6 +41,17 @@ impl TrashEntry {
     }
 }
 
+/// A short age for the Trash dialog: "just now", "5m ago", "2h ago", "3d ago".
+pub fn age_label(deleted_at_ms: u128, now_ms: u128) -> String {
+    let seconds = now_ms.saturating_sub(deleted_at_ms) / 1000;
+    match seconds {
+        0..=59 => "just now".to_string(),
+        60..=3599 => format!("{}m ago", seconds / 60),
+        3600..=86_399 => format!("{}h ago", seconds / 3600),
+        _ => format!("{}d ago", seconds / 86_400),
+    }
+}
+
 fn now_millis() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
