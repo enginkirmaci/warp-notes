@@ -81,8 +81,9 @@ cargo build -p warp-notes
 - A missing binary makes Warp Station's notes surfaces show a toast; nothing
   else breaks.
 - Text size and palette come from `~/.warp/ui.json` through
-  `warpui-kit-core`; this app stores neither. The accent is still pinned
-  (Copper, via the preset normalization); do not add a second accent picker.
+  `warpui-kit-core`; this app stores neither. The accent follows the live
+  ramp through `current_ramp().accent_colors()`; do not add a second accent
+  picker.
 - Reduce motion is local to this app in `UiPrefs`, not in `ui.json`.
 
 ## Do not

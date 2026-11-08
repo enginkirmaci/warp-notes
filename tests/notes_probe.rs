@@ -1155,6 +1155,132 @@ fn an_external_edit_becomes_a_conflict_not_a_silent_overwrite(cx: &mut TestAppCo
     let _ = std::fs::remove_dir_all(&home);
 }
 
+#[gpui::test]
+fn window_title_follows_the_open_note(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-title");
+    let (handle, _page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    assert_eq!(
+        cx.window_title().as_deref(),
+        Some("Warp Notes"),
+        "a window with no note keeps the app title"
+    );
+    click(cx, "note-item-note.md");
+    assert_eq!(
+        cx.window_title().as_deref(),
+        Some("note.md — Warp Notes"),
+        "the title follows the open note"
+    );
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn refresh_sees_an_externally_created_note(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-refresh");
+    let (handle, _page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    let notes = home.join("notes/projects/alpha");
+    std::fs::write(notes.join("fresh.md"), "# Fresh\n").unwrap();
+    assert!(
+        bounds(cx, "note-item-fresh.md").is_none(),
+        "the tree is stale until refresh"
+    );
+    click(cx, "notes-refresh");
+    assert!(
+        bounds(cx, "note-item-fresh.md").is_some(),
+        "refresh picks up a note created outside the app"
+    );
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn refresh_reloads_a_clean_open_note_and_conflicts_a_dirty_one(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-refresh-conflict");
+    let note = home.join("notes/projects/alpha/note.md");
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: Some(note.clone()),
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    std::fs::write(&note, "# Note\n\nchanged outside\n").unwrap();
+    click(cx, "notes-refresh");
+    page.read_with(cx, |page, cx| {
+        assert!(
+            page.editor_value(cx).contains("changed outside"),
+            "a clean buffer follows the disk: {:?}",
+            page.editor_value(cx)
+        );
+    });
+    assert!(
+        bounds(cx, "note-conflict").is_none(),
+        "a clean reload is not a conflict"
+    );
+
+    let live = bounds(cx, "notes-live").expect("the live editor renders");
+    cx.simulate_click(
+        Point::new(
+            live.origin.x + live.size.width / 2.,
+            live.origin.y + live.size.height / 2.,
+        ),
+        Modifiers::default(),
+    );
+    cx.run_until_parked();
+    cx.simulate_input("typed locally");
+    cx.run_until_parked();
+    std::fs::write(&note, "# Note\n\nchanged again outside\n").unwrap();
+    click(cx, "notes-refresh");
+    assert!(
+        bounds(cx, "note-conflict").is_some(),
+        "a dirty buffer becomes a conflict instead of being overwritten"
+    );
+    page.read_with(cx, |page, cx| {
+        assert!(page.editor_value(cx).contains("typed locally"));
+    });
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 /// Everything the user arranges comes back on relaunch: the open note, the
 /// tree's expanded folders, the hidden list pane, the rail's section and the
 /// scope the up button reached.

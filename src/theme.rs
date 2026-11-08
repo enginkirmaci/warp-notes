@@ -6,9 +6,7 @@
 pub use warpui_kit_core::fonts::*;
 // the fixed semantic colors stay constants (they never follow the palette),
 // and the accent preset system rides along
-pub use warpui_kit_core::palette::{
-    AccentColors, CHANGES, DANGER, current_ramp, normalize_accent, tint,
-};
+pub use warpui_kit_core::palette::{AccentColors, CHANGES, DANGER, current_ramp, tint};
 // the module itself names `palette::…` when it maps the kit theme
 use warpui_kit_core::palette;
 pub use warpui_kit_core::shell::scaled;
@@ -29,7 +27,9 @@ pub const NOTE_PATH_MAX_W: f32 = 260.;
 /// Map the family palette onto gpui-kit's shadcn-style theme tokens. Call
 /// after [`gpui_kit::init`], before opening windows.
 pub fn apply_kit_theme(cx: &mut gpui::App) {
-    let accent = palette::AccentColors::for_preset(palette::normalize_accent(Some("blue")));
+    // the accent rides the live ramp, read at every retheme so a palette
+    // switch moves the kit's primary controls with the rest of the app
+    let accent = palette::current_ramp().accent_colors();
     warpui_kit_core::apply_kit_theme(accent, &active_tokens(), palette::current_ramp().base, cx);
 }
 

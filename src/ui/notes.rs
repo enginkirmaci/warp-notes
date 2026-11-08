@@ -367,6 +367,16 @@ impl NotesPage {
             async {}
         })
         .detach();
+        // a window that comes back from another app must see notes created or
+        // removed outside it, and an externally edited open note must not be
+        // overwritten by the next autosave
+        cx.observe_window_activation(window, |this, window, cx| {
+            if window.is_window_active() {
+                this.refresh_from_disk(window, cx);
+            }
+        })
+        .detach();
+        page.set_note_window_title(window);
         page
     }
 
@@ -426,6 +436,86 @@ impl NotesPage {
     fn refresh_tree(&mut self, root: &Path) {
         self.tree = Rc::new(notes_core::load_tree(root));
         self.note_names_stale = true;
+    }
+
+    /// Re-reads the tree and reconciles the open note with the disk. Called by
+    /// the titlebar refresh button and by window activation, so a note another
+    /// app created or removed never waits for a scope change. A clean buffer
+    /// follows the disk; a dirty one becomes a conflict instead of being
+    /// overwritten by the next autosave.
+    pub(crate) fn refresh_from_disk(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(root) = self.notes_root() else {
+            return;
+        };
+        self.refresh_tree(&root);
+
+        let Some(path) = self.open_note.clone() else {
+            self.set_note_window_title(window);
+            cx.notify();
+            return;
+        };
+        let disk = notes_core::note_meta(&path);
+        let clean = !self.conflict
+            && !self.conflicts.contains(&path)
+            && self.editor.read(cx).value().as_ref() == self.saved_text.as_str();
+        match (disk, self.saved_meta) {
+            (None, _) => {
+                if !self.conflict {
+                    self.conflict = true;
+                    self.conflicts.insert(path.clone());
+                    self.notice(
+                        cx,
+                        NoticeKind::Error,
+                        &format!("{} was deleted on disk", path.display()),
+                    );
+                }
+            }
+            (Some(meta), saved) if Some(meta) != saved => {
+                if clean {
+                    match notes_core::read_note(&path) {
+                        Ok(text) => {
+                            self.saved_text = text.clone();
+                            self.saved_meta = Some(meta);
+                            self.dirty.remove(&path);
+                            self.conflicts.remove(&path);
+                            self.conflict = false;
+                            self.editor
+                                .update(cx, |state, cx| state.set_value(text, window, cx));
+                            self.notice(cx, NoticeKind::Info, "note reloaded from disk");
+                        }
+                        Err(err) => self.notice(
+                            cx,
+                            NoticeKind::Error,
+                            &format!("cannot reload {}: {err}", path.display()),
+                        ),
+                    }
+                } else if !self.conflict {
+                    self.conflict = true;
+                    self.conflicts.insert(path.clone());
+                    self.notice(
+                        cx,
+                        NoticeKind::Error,
+                        &format!(
+                            "{} changed on disk; the unsaved buffer was kept",
+                            path.display()
+                        ),
+                    );
+                }
+            }
+            _ => {}
+        }
+        self.set_note_window_title(window);
+        cx.notify();
+    }
+
+    fn set_note_window_title(&self, window: &mut Window) {
+        let title = self
+            .open_note
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .map(|name| format!("{} — Warp Notes", name.to_string_lossy()))
+            .unwrap_or_else(|| "Warp Notes".to_string());
+        window.set_window_title(&title);
     }
 
     pub(crate) fn open_note(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
@@ -509,6 +599,7 @@ impl NotesPage {
             state.set_value(content, window, cx);
             state.focus(window, cx);
         });
+        self.set_note_window_title(window);
         cx.notify();
     }
 
@@ -910,7 +1001,7 @@ impl NotesPage {
         cx.notify();
     }
 
-    fn delete_current(&mut self, cx: &mut Context<Self>) {
+    fn delete_current(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(path) = self.open_note.clone() else {
             return;
         };
@@ -928,6 +1019,7 @@ impl NotesPage {
                         self.prefs.open_note = None;
                         self.prefs.save();
                         self.refresh_tree(&root);
+                        self.set_note_window_title(window);
                     }
                     Err(err) => {
                         self.notice(cx, NoticeKind::Error, &format!("note delete failed: {err}"))
@@ -1807,6 +1899,14 @@ impl NotesPage {
                     .gap_1()
                     .when(self.section == Section::Notes, |row| {
                         row.child(crate::ui::window_button(
+                            "notes-refresh",
+                            "icons/icon-refresh.svg",
+                            theme::raised().into(),
+                            "Refresh notes from disk",
+                            SHOW_TOOLTIPS,
+                            cx.listener(|this, _, window, cx| this.refresh_from_disk(window, cx)),
+                        ))
+                        .child(crate::ui::window_button(
                             "notes-list-toggle",
                             "icons/icon-panel-left.svg",
                             theme::raised().into(),
@@ -2628,7 +2728,9 @@ impl NotesPage {
                                     d.text_color(theme::text_faint())
                                         .hover(|s| s.bg(theme::raised()))
                                 })
-                                .on_click(cx.listener(|this, _, _, cx| this.delete_current(cx)))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.delete_current(window, cx)
+                                }))
                                 .when(!armed, |d| {
                                     d.child(icon(
                                         "icons/icon-trash.svg",
