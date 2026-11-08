@@ -45,8 +45,9 @@ enum Section {
 
 /// The launch configuration the CLI parsed: the store root (Warp Station
 /// passes the resolved `notes_store_path`; standalone defaults to ~/notes),
-/// an optional pinned repo scope, an optional note to open right away, and
-/// whether the launch asked for the whole store outright (`--root`).
+/// an optional pinned repo scope (that repo's folder under `projects/`), an
+/// optional note to open right away, and whether the launch asked for the
+/// whole store outright (`--root`).
 #[derive(Clone, Debug, Default)]
 pub struct Launch {
     pub store_root: Option<PathBuf>,
@@ -109,9 +110,9 @@ struct TextStats {
 pub struct NotesPage {
     /// The notes store root: --store when given, else ~/notes.
     pub(crate) store_root: PathBuf,
-    /// The tree's pinned scope: None roots at the whole notes store (one
-    /// folder per repo), Some at one repo's notes folder. Fixed after launch
-    /// except through the titlebar's up button.
+    /// The tree's pinned scope: None roots at the whole notes store, Some at
+    /// one repo's folder under `projects/`. Fixed after launch except through
+    /// the titlebar's up button.
     notes_scope: Option<String>,
     /// The rail's open section: the tree + editor, or Settings.
     section: Section,
@@ -371,7 +372,7 @@ impl NotesPage {
 
     fn notes_root(&self) -> Option<PathBuf> {
         // the pinned scope decides — repo-scoped when launch or the up button
-        // set one, whole-store otherwise (one folder per repo)
+        // set one, whole-store otherwise
         match &self.notes_scope {
             Some(repo) => Some(notes_core::repo_notes_root(&self.store_root, repo)),
             None => Some(self.store_root.clone()),
@@ -1718,7 +1719,6 @@ impl NotesPage {
                                 .child(repo),
                         )
                         // up out of the repo's notes folder to the whole store
-                        // (one folder per repo)
                         .child(crate::ui::window_button(
                             "notes-up-dir",
                             "icons/icon-arrow-up.svg",
@@ -2647,6 +2647,10 @@ impl NotesPage {
                         .items_center()
                         .gap_2()
                         .pb_1()
+                        // the store-relative path shrinks (ellipsized) so a
+                        // deep note never widens the pane past the window
+                        .min_w_0()
+                        .overflow_hidden()
                         .text_size(px(theme::font_meta()))
                         .text_color(theme::text_faint())
                         .child(
@@ -2656,6 +2660,7 @@ impl NotesPage {
                                 .whitespace_nowrap()
                                 .text_ellipsis()
                                 .font_family(SharedString::from(theme::code_font()))
+                                .max_w(px(theme::scaled(theme::NOTE_PATH_MAX_W)))
                                 .child(compact_path(&self.store_root, &path)),
                         )
                         .child(div().flex_1())

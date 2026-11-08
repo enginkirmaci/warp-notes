@@ -13,12 +13,12 @@ use gpui::{
 use std::path::PathBuf;
 
 fn seed_notes(home: &std::path::Path) {
-    let notes = home.join("notes/alpha");
+    let notes = home.join("notes/projects/alpha");
     std::fs::create_dir_all(&notes).unwrap();
     std::fs::write(notes.join("note.md"), "# Note\n\nHello **world**.\n").unwrap();
     std::fs::write(notes.join("task.md"), "- [ ] alpha task\nplain\n").unwrap();
     std::fs::write(notes.join("list.md"), "- alpha\n").unwrap();
-    let beta = home.join("notes/beta");
+    let beta = home.join("notes/projects/beta");
     std::fs::create_dir_all(&beta).unwrap();
     std::fs::write(beta.join("beta.md"), "# Beta\n").unwrap();
 }
@@ -144,22 +144,32 @@ fn repo_scope_up_button_tree_and_live_editor(cx: &mut TestAppContext) {
         "other repos' notes stay hidden while scoped",
     );
 
-    // up leaves the repo folder for the whole store — one folder per repo
+    // up leaves the repo folder for the whole store: repo folders live under
+    // projects/, so the root shows that one folder, not its children
     click(cx, "notes-up-dir");
     assert!(
-        bounds(cx, "note-item-alpha").is_some(),
-        "up shows the store's repo folders"
+        bounds(cx, "note-item-projects").is_some(),
+        "up shows the store root, where projects/ groups the repo folders"
     );
     assert!(
-        bounds(cx, "note-item-beta").is_some(),
-        "up shows every repo folder"
+        bounds(cx, "note-item-alpha").is_none(),
+        "a repo folder is not a sibling of the store's own folders"
     );
     assert!(
         bounds(cx, "notes-up-dir").is_none(),
         "store root has no up button"
     );
 
-    // open the folder and then a note from the tree
+    // open projects/, then the repo folder, then a note from the tree
+    click(cx, "note-item-projects");
+    assert!(
+        bounds(cx, "note-item-alpha").is_some(),
+        "projects/ holds every repo folder"
+    );
+    assert!(
+        bounds(cx, "note-item-beta").is_some(),
+        "projects/ holds every repo folder"
+    );
     click(cx, "note-item-alpha");
     click(cx, "note-item-note.md");
     assert!(
@@ -190,6 +200,7 @@ fn repo_scope_up_button_tree_and_live_editor(cx: &mut TestAppContext) {
     // would fold it instead of showing task.md. The caret moves off the line
     // first: right on the marker the box shows as source, as in Obsidian.
     click(cx, "notes-collapse-all");
+    click(cx, "note-item-projects");
     click(cx, "note-item-alpha");
     click(cx, "note-item-task.md");
     cx.update(|_, cx| {
@@ -340,7 +351,7 @@ fn following_a_wikilink_opens_or_creates_the_note(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     cx.update(theme::apply_kit_theme);
     let home = temp_home("warpnotes-probe-wiki");
-    let notes = home.join("notes/alpha");
+    let notes = home.join("notes/projects/alpha");
     std::fs::write(
         notes.join("links.md"),
         "see [[list]] and [[Brand New]]\n\nend",
@@ -351,7 +362,7 @@ fn following_a_wikilink_opens_or_creates_the_note(cx: &mut TestAppContext) {
         Launch {
             store_root: Some(home.join("notes")),
             repo_scope: Some("alpha".into()),
-            open_note: Some(PathBuf::from("alpha/links.md")),
+            open_note: Some(PathBuf::from("projects/alpha/links.md")),
             whole_store: false,
         },
     );
@@ -428,13 +439,14 @@ fn note_arg_opens_the_requested_note(cx: &mut TestAppContext) {
     cx.update(theme::apply_kit_theme);
 
     let home = temp_home("warpnotes-probe-note");
-    // --note beta/beta.md (store-relative): opens right away, no scope pin
+    // --note projects/beta/beta.md (store-relative): opens right away, no
+    // scope pin
     let (handle, page) = open_page(
         cx,
         Launch {
             store_root: Some(home.join("notes")),
             repo_scope: None,
-            open_note: Some(PathBuf::from("beta/beta.md")),
+            open_note: Some(PathBuf::from("projects/beta/beta.md")),
             whole_store: false,
         },
     );
@@ -449,9 +461,9 @@ fn note_arg_opens_the_requested_note(cx: &mut TestAppContext) {
             "--note opens the requested note: {value:?}"
         );
     });
-    // whole-store root: both repo folders are siblings in the tree
+    // whole-store root: projects/ is the one folder holding the repo folders
     assert!(
-        bounds(cx, "note-item-alpha").is_some(),
+        bounds(cx, "note-item-projects").is_some(),
         "a --note launch without --repo roots at the whole store",
     );
     assert!(
@@ -490,13 +502,10 @@ fn root_launch_overrides_a_remembered_repo_scope(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.update(|window, cx| drop(window.draw(cx)));
 
-    // both repo folders are siblings at the root, and nothing is pinned
+    // projects/ is at the root (the repo folders are inside it), nothing is
+    // pinned
     assert!(
-        bounds(cx, "note-item-alpha").is_some(),
-        "--root shows every repo folder",
-    );
-    assert!(
-        bounds(cx, "note-item-beta").is_some(),
+        bounds(cx, "note-item-projects").is_some(),
         "--root shows every repo folder",
     );
     assert!(
@@ -632,7 +641,7 @@ fn pasting_a_clipboard_image_saves_an_asset_and_inserts_a_ref(tcx: &mut TestAppC
         assert!(page.is_dirty(cx), "pasting marks the note dirty");
     });
 
-    let assets = probe.home.join("notes/alpha/assets");
+    let assets = probe.home.join("notes/projects/alpha/assets");
     let mut entries: Vec<PathBuf> = std::fs::read_dir(&assets)
         .expect("the assets folder is created next to the note")
         .map(|entry| entry.unwrap().path())
@@ -678,7 +687,7 @@ fn pasting_text_never_writes_an_asset(tcx: &mut TestAppContext) {
         );
     });
     assert!(
-        !probe.home.join("notes/alpha/assets").exists(),
+        !probe.home.join("notes/projects/alpha/assets").exists(),
         "text paste writes no asset folder"
     );
 
@@ -713,7 +722,7 @@ fn a_mixed_clipboard_pastes_text_not_image(tcx: &mut TestAppContext) {
         );
     });
     assert!(
-        !probe.home.join("notes/alpha/assets").exists(),
+        !probe.home.join("notes/projects/alpha/assets").exists(),
         "mixed paste writes no asset folder"
     );
 
@@ -740,7 +749,7 @@ fn ctrl_f_opens_find_and_selects_the_first_match(cx: &mut TestAppContext) {
         Launch {
             store_root: Some(home.join("notes")),
             repo_scope: None,
-            open_note: Some(home.join("notes/alpha/note.md")),
+            open_note: Some(home.join("notes/projects/alpha/note.md")),
             whole_store: false,
         },
     );
@@ -789,7 +798,7 @@ fn a_large_store_lays_out_only_the_visible_rows(cx: &mut TestAppContext) {
 
     let home = std::env::temp_dir().join(format!("warpnotes-probe-large-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
-    let notes = home.join("notes/alpha");
+    let notes = home.join("notes/projects/alpha");
     std::fs::create_dir_all(&notes).unwrap();
     point_prefs_at(&home);
     // 2000 notes: comfortably more than a viewport can show
@@ -848,7 +857,7 @@ fn search_sits_in_the_titlebar_and_caps_its_popup(cx: &mut TestAppContext) {
 
     let home = std::env::temp_dir().join(format!("warpnotes-probe-hits-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
-    let notes = home.join("notes/alpha");
+    let notes = home.join("notes/projects/alpha");
     std::fs::create_dir_all(&notes).unwrap();
     point_prefs_at(&home);
     // every file matches the term, by name and by body
@@ -1021,7 +1030,7 @@ fn edits_autosave_after_the_debounce(cx: &mut TestAppContext) {
     cx.update(|window, cx| drop(window.draw(cx)));
     click(cx, "note-item-note.md");
 
-    let note = home.join("notes/alpha/note.md");
+    let note = home.join("notes/projects/alpha/note.md");
     let on_disk = std::fs::read_to_string(&note).unwrap();
     let live = bounds(cx, "notes-live").expect("the live editor renders");
     cx.simulate_click(
@@ -1062,7 +1071,7 @@ fn an_external_edit_becomes_a_conflict_not_a_silent_overwrite(cx: &mut TestAppCo
     cx.update(gpui_kit::init);
     cx.update(theme::apply_kit_theme);
     let home = temp_home("warpnotes-probe-conflict");
-    let note = home.join("notes/alpha/note.md");
+    let note = home.join("notes/projects/alpha/note.md");
     let (handle, page) = open_page(
         cx,
         Launch {
@@ -1169,6 +1178,7 @@ fn a_relaunch_restores_the_arranged_ui(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.update(|window, cx| drop(window.draw(cx)));
     click(cx, "notes-up-dir");
+    click(cx, "note-item-projects");
     click(cx, "note-item-alpha");
     click(cx, "note-item-note.md");
     click(cx, "notes-list-toggle");

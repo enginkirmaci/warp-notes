@@ -179,7 +179,7 @@ impl NotesPage {
         kit::row_with_desc(
             "settings-row-Store",
             "Notes store",
-            "One subfolder per repository. Warp Station passes its notes_store_path here.",
+            "Repo notes live under projects/. Warp Station passes its notes_store_path here.",
             div()
                 .min_w_0()
                 .max_w(px(360.))

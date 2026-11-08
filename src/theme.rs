@@ -18,6 +18,12 @@ pub use warpui_kit_core::shell::scaled;
 /// The title bar's height, from the shared shell.
 pub const TITLEBAR_H: f32 = warpui_kit_core::shell::TITLE_BAR_HEIGHT;
 
+/// The cap on the store-relative path in the note head. The detail pane's
+/// minimum width must not follow the path: a deeper store (repo notes under
+/// `projects/`) made the pane wider than the window and pushed the head's
+/// controls past its edge.
+pub const NOTE_PATH_MAX_W: f32 = 260.;
+
 // ---- gpui-kit theme mapping ------------------------------------------------
 
 /// Map the family palette onto gpui-kit's shadcn-style theme tokens. Call

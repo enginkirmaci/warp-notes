@@ -92,8 +92,8 @@ fn the_old_layout_moves_under_the_suite_root_and_the_store_to_home_notes() {
 
     warp_notes::paths::migrate_legacy_layout();
 
-    assert_eq!(read(home.join("notes/alpha/note.md")), "# alpha");
-    assert_eq!(read(home.join("notes/beta/beta.md")), "# beta");
+    assert_eq!(read(home.join("notes/projects/alpha/note.md")), "# alpha");
+    assert_eq!(read(home.join("notes/projects/beta/beta.md")), "# beta");
     assert_eq!(read(home.join("notes/flat.md")), "# flat");
     assert_eq!(
         read(home.join(".warp/notes/settings.json")),
@@ -132,7 +132,7 @@ fn notes_inside_the_old_app_folder_reach_the_store() {
 
     warp_notes::paths::migrate_legacy_layout();
 
-    assert_eq!(read(home.join("notes/alpha/note.md")), "# alpha");
+    assert_eq!(read(home.join("notes/projects/alpha/note.md")), "# alpha");
     assert_eq!(
         read(home.join(".warp/notes/settings.json")),
         r#"{"list_width":400}"#
@@ -180,7 +180,7 @@ fn a_second_pass_over_a_migrated_home_changes_nothing() {
     warp_notes::paths::migrate_legacy_layout();
     warp_notes::paths::migrate_legacy_layout();
 
-    assert!(home.join("notes/alpha/note.md").is_file());
+    assert!(home.join("notes/projects/alpha/note.md").is_file());
     assert!(home.join(".warp/notes/settings.json").is_file());
     assert!(home.join(".warp/logs/warpnotes-.log.2026-11-04").is_file());
     assert!(!home.join(".warp-notes").exists());

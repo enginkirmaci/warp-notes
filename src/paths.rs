@@ -1,5 +1,5 @@
 //! Global per-user locations: the notes store is user content at `~/notes`
-//! (one folder per repository, shared with Warp Station), the app's own
+//! (repo notes under `projects/<repo>`, shared with Warp Station), the app's own
 //! settings live with the other apps' data in `~/.warp/notes`, and the
 //! rolling logs go to the suite's shared `~/.warp/logs`. On first run the
 //! legacy `~/.warp-notes` folder moves in and a store still at
@@ -24,7 +24,7 @@ impl AppPaths {
     }
 }
 
-/// The shared notes store: one subfolder per repository, `~/notes`.
+/// The shared notes store: `~/notes`, with repo notes under `projects/`.
 pub fn default_store_root() -> PathBuf {
     paths::notes_store_root()
 }

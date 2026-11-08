@@ -6,9 +6,9 @@ from DevTools into its own repo. Rust/GPUI (gpui-kit 0.7), one crate.
 
 ## What it does
 
-- One notes store on disk: `~/notes`, one subfolder per repository. A store
-  an older release kept in `~/.warp/notes` (or the even older
-  `~/.devtools/notes`) moves there on first run.
+- One notes store on disk: `~/notes`, one repository per folder under
+  `projects/`. A store an older release kept in `~/.warp/notes` (or the even
+  older `~/.devtools/notes`) moves there on first run.
 - The family shell: a rail (Notes, Settings), the note tree in the list pane and
   one live editor in the detail pane; Settings holds the store path, the shared
   text size, the Copper palette and reduce motion (the list width and
@@ -34,8 +34,8 @@ warp-notes [--store <path>] [--repo <name>] [--root] [--note <path>]
 
 - `--store` — the notes store root; default `~/notes`. Warp Station passes
   its resolved `notes_store_path` setting.
-- `--repo` — pin the tree to one repository's notes folder (the titlebar's
-  up button climbs back to the whole store).
+- `--repo` — pin the tree to one repository's folder under `projects/` (the
+  titlebar's up button climbs back to the whole store).
 - `--root` — open the whole store outright, beating a `--repo` pin and the
   scope the last window remembered. Warp Station's titlebar sends it, so the
   notes root opens whatever repository is selected there.

@@ -46,12 +46,14 @@ warp-notes [--store <path>] [--repo <name>] [--root] [--note <path>]
 
 ## Store and migrations
 
-- The store is user content at `~/notes`, one subfolder per repository. It is
-  shared with Warp Station through `warpui_kit_platform::notes`; keep the
-  on-disk format compatible.
+- The store is user content, default `~/notes` (`--store` /
+  `notes_store_path` can point it anywhere, an Obsidian vault for one user).
+  One repository per folder under `<store>/projects/`; notes that belong to no
+  repo live at the store root. It is shared with Warp Station through
+  `warpui_kit_platform::notes`; keep the on-disk format compatible.
 - `paths::migrate_legacy_layout()` runs before logging. It absorbs
   `~/.warp-notes`, moves a store kept in `~/.warp/notes` or
-  `~/.devtools/notes` into `~/notes`, and marks the scan one-shot. Name
+  `~/.devtools/notes` into `~/notes/projects/`, and marks the scan one-shot. Name
   collisions keep both sides and leave the marker unwritten so the next start
   retries.
 - `AppPaths::config_dir()` is the app's settings folder, **not** the store.
