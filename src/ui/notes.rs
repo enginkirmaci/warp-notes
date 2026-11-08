@@ -202,6 +202,7 @@ impl NotesPage {
             None => crate::paths::default_store_root(),
         };
         let _ = std::fs::create_dir_all(&store_root);
+        crate::trash::purge_trash(&store_root, crate::trash::MAX_AGE);
         let notes_scope = launch.repo_scope;
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search all notes…"));
         let editor = cx.new(|cx| LiveEditorState::new(window, cx).placeholder("# Title"));

@@ -216,6 +216,125 @@ pub fn create_folder(repo_notes_root: &Path, parent: &Path, name: &str) -> anyho
     Ok(path)
 }
 
+/// Renames one note or folder in place. Notes keep their `.md` extension;
+/// folders keep none. The target directory is the scope root, so a repo-scoped
+/// window cannot rename a note into another repo. A case-only rename on
+/// Windows goes through a temporary name because the target already "exists".
+pub fn rename_entry(scope_root: &Path, target: &Path, new_name: &str) -> anyhow::Result<PathBuf> {
+    ensure_under_root(scope_root, target)?;
+    if target == scope_root {
+        anyhow::bail!("the notes root cannot be renamed");
+    }
+    let is_folder = target.is_dir();
+    let file_name = sanitize_entry_name(new_name, !is_folder)
+        .ok_or_else(|| anyhow::anyhow!("The name is empty."))?;
+    let parent = target
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("the entry has no parent"))?;
+    let destination = parent.join(&file_name);
+    ensure_under_root(scope_root, &destination)?;
+    if destination == target {
+        return Ok(target.to_path_buf());
+    }
+    if destination.exists() {
+        // Windows treats a case-only change as an existing target; allow it
+        // only when both paths resolve to the same file, through a temp hop.
+        let same = target
+            .canonicalize()
+            .ok()
+            .zip(destination.canonicalize().ok())
+            .is_some_and(|(left, right)| left == right);
+        if !same {
+            anyhow::bail!("'{file_name}' already exists");
+        }
+        let temporary = parent.join(format!(".warp-rename-{:04x}", paste_rand16()));
+        std::fs::rename(target, &temporary)?;
+        if let Err(err) = std::fs::rename(&temporary, &destination) {
+            let _ = std::fs::rename(&temporary, target);
+            return Err(err.into());
+        }
+    } else {
+        std::fs::rename(target, &destination)?;
+    }
+    Ok(destination)
+}
+
+/// Moves one note or folder under another folder in the same scope root.
+/// Moving a folder into itself or a descendant is refused before the rename,
+/// as is every existing target.
+pub fn move_entry(scope_root: &Path, target: &Path, new_parent: &Path) -> anyhow::Result<PathBuf> {
+    ensure_under_root(scope_root, target)?;
+    ensure_under_root(scope_root, new_parent)?;
+    if !new_parent.is_dir() {
+        anyhow::bail!("the destination folder does not exist");
+    }
+    if target.is_dir() {
+        let target_canon = target
+            .canonicalize()
+            .map_err(|err| anyhow::anyhow!("cannot resolve the folder: {err}"))?;
+        let parent_canon = new_parent
+            .canonicalize()
+            .map_err(|err| anyhow::anyhow!("cannot resolve the destination: {err}"))?;
+        if parent_canon.starts_with(&target_canon) {
+            anyhow::bail!("a folder cannot be moved into itself");
+        }
+    }
+    let file_name = target
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("the entry has no name"))?;
+    let destination = new_parent.join(file_name);
+    ensure_under_root(scope_root, &destination)?;
+    if destination == target {
+        return Ok(target.to_path_buf());
+    }
+    if destination.exists() {
+        anyhow::bail!("'{}' already exists", destination.display());
+    }
+    std::fs::rename(target, &destination)?;
+    Ok(destination)
+}
+
+/// Copies one note next to itself as `<stem> copy.md`, then `copy 2`, and so
+/// on. The write is exclusive, so another process cannot claim the same name
+/// between the probe and the copy.
+pub fn duplicate_note(scope_root: &Path, source: &Path) -> anyhow::Result<PathBuf> {
+    ensure_under_root(scope_root, source)?;
+    if !source.is_file() {
+        anyhow::bail!("only a note can be duplicated");
+    }
+    let parent = source
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("the note has no parent"))?;
+    let stem = source
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("the note has no usable name"))?;
+    let bytes = std::fs::read(source)?;
+    use std::io::Write as _;
+    for version in 1..=1000 {
+        let name = if version == 1 {
+            format!("{stem} copy.md")
+        } else {
+            format!("{stem} copy {version}.md")
+        };
+        let candidate = parent.join(name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(mut file) => {
+                file.write_all(&bytes)?;
+                return Ok(candidate);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err.into()),
+        }
+    }
+    anyhow::bail!("no unique copy name was found")
+}
+
 pub fn delete(repo_notes_root: &Path, target: &Path) -> anyhow::Result<()> {
     ensure_under_root(repo_notes_root, target)?;
     if target.is_dir() {
@@ -234,7 +353,7 @@ pub fn search(repo_notes_root: &Path, term: &str) -> Vec<NotesSearchHit> {
 /// create_folder validate, and on Windows it returns `\\?\`-prefixed verbatim
 /// paths — normalize both sides to plain paths and compare components
 /// (case-insensitively on Windows) so mixed forms still pass containment.
-fn ensure_under_root(root: &Path, target: &Path) -> anyhow::Result<()> {
+pub(crate) fn ensure_under_root(root: &Path, target: &Path) -> anyhow::Result<()> {
     let root = plain_path(root.canonicalize().unwrap_or_else(|_| root.to_path_buf()));
     let target = plain_path(
         target
@@ -273,6 +392,14 @@ fn plain_path(path: PathBuf) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scratch(prefix: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "{prefix}-{}-{:04x}",
+            std::process::id(),
+            paste_rand16()
+        ))
+    }
 
     #[test]
     fn save_decision_never_overwrites_a_changed_file() {
@@ -410,6 +537,65 @@ mod tests {
         assert!(ensure_under_root(&root, root.parent().unwrap()).is_err());
         assert!(ensure_under_root(&root, &root).is_ok());
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn rename_entry_keeps_note_extension_and_refuses_overwrite() {
+        let root = scratch("warp-notes-rename");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("alpha.md"), "alpha").unwrap();
+        std::fs::write(root.join("beta.md"), "beta").unwrap();
+        std::fs::create_dir_all(root.join("folder")).unwrap();
+
+        let renamed = rename_entry(&root, &root.join("alpha.md"), "Gamma").unwrap();
+        assert_eq!(renamed, root.join("Gamma.md"));
+        assert_eq!(std::fs::read_to_string(&renamed).unwrap(), "alpha");
+        assert!(!root.join("alpha.md").exists());
+        assert!(rename_entry(&root, &renamed, "beta").is_err());
+
+        let folder = rename_entry(&root, &root.join("folder"), "Renamed").unwrap();
+        assert_eq!(folder, root.join("Renamed"));
+        assert!(folder.is_dir());
+
+        let outside = scratch("warp-notes-rename-outside");
+        assert!(rename_entry(&root, &outside, "escape").is_err());
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn move_entry_refuses_a_folder_into_itself() {
+        let root = scratch("warp-notes-move");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("a/sub")).unwrap();
+        std::fs::write(root.join("a/note.md"), "note").unwrap();
+
+        assert!(move_entry(&root, &root.join("a"), &root.join("a/sub")).is_err());
+        let moved = move_entry(&root, &root.join("a/note.md"), &root.join("a/sub")).unwrap();
+        assert_eq!(moved, root.join("a/sub/note.md"));
+        assert_eq!(std::fs::read_to_string(&moved).unwrap(), "note");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn duplicate_note_names_are_unique_and_leave_the_original() {
+        let root = scratch("warp-notes-copy");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("a")).unwrap();
+        std::fs::write(root.join("a/note.md"), "body").unwrap();
+
+        let first = duplicate_note(&root, &root.join("a/note.md")).unwrap();
+        let second = duplicate_note(&root, &root.join("a/note.md")).unwrap();
+        assert_eq!(first, root.join("a/note copy.md"));
+        assert_eq!(second, root.join("a/note copy 2.md"));
+        assert_eq!(std::fs::read_to_string(first).unwrap(), "body");
+        assert_eq!(std::fs::read_to_string(second).unwrap(), "body");
+        assert_eq!(
+            std::fs::read_to_string(root.join("a/note.md")).unwrap(),
+            "body"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -51,6 +51,11 @@ warp-notes [--store <path>] [--repo <name>] [--root] [--note <path>]
   One repository per folder under `<store>/projects/`; notes that belong to no
   repo live at the store root. It is shared with Warp Station through
   `warpui_kit_platform::notes`; keep the on-disk format compatible.
+- Trash lives at `<store>/.warp-notes/trash/<deleted-ms>-<4hex>/`: a `path`
+  text file holds the store-relative original and `payload` is the moved
+  file or folder. Trash is store-root-scoped even when the tree is pinned to
+  one repo. The folder is hidden and skipped by every walker; entries older
+  than 30 days are purged on launch.
 - `paths::migrate_legacy_layout()` runs before logging. It absorbs
   `~/.warp-notes`, moves a store kept in `~/.warp/notes` or
   `~/.devtools/notes` into `~/notes/projects/`, and marks the scan one-shot. Name

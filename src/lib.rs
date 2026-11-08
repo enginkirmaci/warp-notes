@@ -8,5 +8,6 @@ pub mod logging;
 pub mod notes_store;
 pub mod paths;
 pub mod theme;
+pub mod trash;
 pub mod ui;
 pub mod ui_prefs;
