@@ -32,6 +32,8 @@ pub struct UiPrefs {
     pub recent: Vec<String>,
     /// Pinned notes, relative to the store root.
     pub pinned: Vec<String>,
+    /// A standalone launch's chosen store root; `--store` wins over it.
+    pub store_path: Option<String>,
     /// The repo scope a `--repo` launch pinned or the up button reached.
     pub notes_scope: Option<String>,
 }
@@ -48,6 +50,7 @@ impl Default for UiPrefs {
             expanded: Vec::new(),
             recent: Vec::new(),
             pinned: Vec::new(),
+            store_path: None,
             notes_scope: None,
         }
     }
@@ -98,6 +101,10 @@ impl UiPrefs {
         }
         self.recent = normalize_relative_list(self.recent, 20);
         self.pinned = normalize_relative_list(self.pinned, 200);
+        self.store_path = self
+            .store_path
+            .map(|path| path.trim().to_string())
+            .filter(|path| !path.is_empty());
         self
     }
 }
@@ -152,6 +159,7 @@ mod tests {
             expanded: vec!["alpha".into(), "alpha/sub".into()],
             recent: vec!["alpha/note.md".into(), "beta/note.md".into()],
             pinned: vec!["alpha/note.md".into()],
+            store_path: Some("/mnt/notes".into()),
             notes_scope: Some("alpha".into()),
         };
         let text = serde_json::to_string(&prefs).unwrap();
@@ -165,6 +173,7 @@ mod tests {
         assert_eq!(parsed.expanded, vec!["alpha", "alpha/sub"]);
         assert_eq!(parsed.recent, vec!["alpha/note.md", "beta/note.md"]);
         assert_eq!(parsed.pinned, vec!["alpha/note.md"]);
+        assert_eq!(parsed.store_path.as_deref(), Some("/mnt/notes"));
         assert_eq!(parsed.notes_scope.as_deref(), Some("alpha"));
 
         let legacy: UiPrefs = serde_json::from_str("{\"list_width\": 400}").unwrap();
@@ -175,6 +184,7 @@ mod tests {
         assert_eq!(legacy.expanded, Vec::<String>::new());
         assert!(legacy.recent.is_empty());
         assert!(legacy.pinned.is_empty());
+        assert_eq!(legacy.store_path, None);
     }
 
     #[test]

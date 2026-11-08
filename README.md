@@ -7,11 +7,14 @@ from DevTools into its own repo. Rust/GPUI (gpui-kit 0.9), one crate.
 ## What it does
 
 - One notes store on disk: `~/notes`, one repository per folder under
-  `projects/`. A store an older release kept in `~/.warp/notes` (or the even
-  older `~/.devtools/notes`) moves there on first run.
+  `projects/`. A standalone window can point it anywhere from Settings
+  (a `--store` launch, including Warp Station's, wins); an older store kept in
+  `~/.warp/notes` (or the even older `~/.devtools/notes`) moves there on first
+  run.
 - The family shell: a rail (Notes, Settings), the note tree in the list pane and
-  one live editor in the detail pane; Settings holds the store path, the shared
-  text size, the live palette and reduce motion (the list width and
+  one live editor in the detail pane; Settings holds the store path (editable
+  when the window was not launched with `--store`), the shared text size, the
+  live palette and reduce motion (the list width and
   the motion choice persist in the versioned snake_case
   `~/.warp/notes/settings.json`).
 - Folder/file tree, capped full-text search, dirty-buffer-safe navigation.
@@ -32,6 +35,12 @@ from DevTools into its own repo. Rust/GPUI (gpui-kit 0.9), one crate.
 - The title-bar search is store-wide by default; its popup scope chip narrows
   to the pinned repo. `Ctrl+Shift+F` (or "See all results") opens the full
   result list with highlighted excerpts.
+- Open notes appear in a tab strip: `Ctrl+Enter` in quick open or the row
+  menu's "Open in new tab" adds one, `Ctrl+W` closes, `Ctrl+Tab` cycles, and
+  `Alt+Left`/`Right` (or the titlebar arrows) walk the open history.
+- The right-hand context panel toggles with `Ctrl+Shift+B`: Outline lists the
+  current headings and jumps the caret, Backlinks lists the notes that link
+  here and opens their source.
 - A single live editor that works like Obsidian's live preview: markdown
   renders in place while typing with its syntax hidden until the caret touches
   it, checkboxes toggle on click, Enter continues lists, links and
@@ -50,8 +59,9 @@ from DevTools into its own repo. Rust/GPUI (gpui-kit 0.9), one crate.
 warp-notes [--store <path>] [--repo <name>] [--root] [--note <path>]
 ```
 
-- `--store` — the notes store root; default `~/notes`. Warp Station passes
-  its resolved `notes_store_path` setting.
+- `--store` — the notes store root; default `~/notes` or the path saved in
+  Settings. Warp Station passes its resolved `notes_store_path` setting and
+  wins over the local field.
 - `--repo` — pin the tree to one repository's folder under `projects/` (the
   titlebar's up button climbs back to the whole store).
 - `--root` — open the whole store outright, beating a `--repo` pin and the

@@ -23,7 +23,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use warpui_kit_core::{motion, shell};
-use warpui_kit_markdown::{LiveEditor, LiveEditorEvent, LiveEditorState, apply};
+use warpui_kit_markdown::live::{InlineObjectKind, LiveLineKind};
+use warpui_kit_markdown::{
+    LiveEditor, LiveEditorEvent, LiveEditorState, apply, note_key, parse_document,
+};
 
 // Ctrl+F: open the editor's find bar (bound in main.rs).
 gpui::actions!(warp_notes, [OpenFind]);
@@ -115,6 +118,7 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl+P", "Quick open"),
     ("Ctrl+K", "Search notes"),
     ("Ctrl+Shift+F", "Full search results"),
+    ("Ctrl+Shift+B", "Outline and links"),
     ("Ctrl+Shift+E", "Focus the tree"),
     ("Up / Down", "Move the tree cursor"),
     ("Left / Right", "Collapse / expand"),
@@ -125,6 +129,9 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl+S", "Save now"),
     ("Ctrl+N", "New note"),
     ("Ctrl+\\", "Toggle the list"),
+    ("Ctrl+W", "Close the active tab"),
+    ("Ctrl+Tab", "Next tab"),
+    ("Alt+Left / Right", "Back / forward"),
     ("Ctrl+/", "This cheat sheet"),
 ];
 
@@ -183,9 +190,45 @@ struct PaletteItem {
     relative: String,
 }
 
+#[derive(Clone, Debug)]
+struct OpenTab {
+    path: PathBuf,
+    saved_text: String,
+    saved_meta: Option<notes_core::FileMeta>,
+    conflict: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ContextTab {
+    Outline,
+    Links,
+}
+
+#[derive(Clone, Debug)]
+struct Heading {
+    level: u8,
+    label: String,
+    byte: usize,
+}
+
+#[derive(Clone, Debug)]
+struct Backlink {
+    path: PathBuf,
+    title: String,
+    relative: String,
+}
+
 pub struct NotesPage {
     /// The notes store root: --store when given, else ~/notes.
     pub(crate) store_root: PathBuf,
+    /// True when the launch passed `--store` (Warp Station or CLI); the
+    /// settings row is read-only then because the next launch wins.
+    pub(crate) store_pinned: bool,
+    pub(crate) store_path_input: Entity<InputState>,
+    store_path_generation: u32,
+    /// A debounced store-path edit waiting for the next render, where the
+    /// window is available to rebuild the shell.
+    store_path_pending: Option<PathBuf>,
     /// The tree's pinned scope: None roots at the whole notes store, Some at
     /// one repo's folder under `projects/`. Fixed after launch except through
     /// the titlebar's up button.
@@ -222,6 +265,13 @@ pub struct NotesPage {
     note_names_stale: bool,
     expanded: std::collections::HashSet<PathBuf>,
     open_note: Option<PathBuf>,
+    /// Per-window tabs. The active tab mirrors `open_note`, `saved_text`,
+    /// `saved_meta` and `conflict`; the others keep their own baseline.
+    open_tabs: Vec<OpenTab>,
+    active_tab: usize,
+    /// Back/forward history over the open sequence (Alt+Left/Right).
+    history: Vec<PathBuf>,
+    history_index: usize,
     /// Unsaved note contents by path — navigation never loses an edit.
     dirty: HashMap<PathBuf, String>,
     /// The on-disk contents of the open note; comparing against the editor
@@ -256,6 +306,14 @@ pub struct NotesPage {
     search_all_notes: bool,
     /// The full results view opened from the popup or Ctrl+Shift+F.
     search_results_open: bool,
+    /// The right-hand Outline/Backlinks panel.
+    context_open: bool,
+    context_tab: ContextTab,
+    outline_cache: Option<(u64, Vec<Heading>)>,
+    backlinks: Vec<Backlink>,
+    backlinks_for: Option<String>,
+    backlinks_generation: u32,
+    backlinks_building: bool,
     /// Debounce sequence; a keystroke invalidates any in-flight search.
     search_generation: u32,
     /// Ctrl+F in the editor: the find bar, its byte ranges and the current hit.
@@ -297,12 +355,28 @@ pub struct NotesPage {
 
 impl NotesPage {
     pub fn new(launch: Launch, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut prefs = UiPrefs::load();
+        let store_pinned = launch.store_root.is_some();
         let store_root = match launch.store_root {
             Some(root) => root,
-            None => crate::paths::default_store_root(),
+            None => prefs
+                .store_path
+                .as_deref()
+                .map(PathBuf::from)
+                .unwrap_or_else(crate::paths::default_store_root),
+        };
+        let store_root = if store_root.is_absolute() {
+            store_root
+        } else {
+            std::path::absolute(&store_root).unwrap_or(store_root)
         };
         let _ = std::fs::create_dir_all(&store_root);
         crate::trash::purge_trash(&store_root, crate::trash::MAX_AGE);
+        let store_path_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(store_root.display().to_string())
+                .placeholder(crate::paths::default_store_root().display().to_string())
+        });
         let notes_scope = launch.repo_scope;
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search all notes…"));
         let editor = cx.new(|cx| LiveEditorState::new(window, cx).placeholder("# Title"));
@@ -322,6 +396,12 @@ impl NotesPage {
             if matches!(event, InputEvent::Change) {
                 this.palette_selected = 0;
                 cx.notify();
+            }
+        })
+        .detach();
+        cx.subscribe(&store_path_input, |this, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.schedule_store_path(cx);
             }
         })
         .detach();
@@ -348,7 +428,6 @@ impl NotesPage {
         cx.observe(&editor, |_, _, cx| cx.notify()).detach();
         // the remembered bits: the layout, and the motion choice (applied
         // before the first frame so nothing animates that should not)
-        let mut prefs = UiPrefs::load();
         // --root asks for the whole store outright: it beats a --repo pin and
         // the remembered one, and dropping the pin keeps the next bare launch
         // at the root too
@@ -391,6 +470,10 @@ impl NotesPage {
         let list_visible = prefs.list_visible;
         let mut page = Self {
             store_root,
+            store_pinned,
+            store_path_input,
+            store_path_generation: 0,
+            store_path_pending: None,
             notes_scope,
             section,
             settings_section,
@@ -407,6 +490,10 @@ impl NotesPage {
             note_names_stale: true,
             expanded,
             open_note: None,
+            open_tabs: Vec::new(),
+            active_tab: 0,
+            history: Vec::new(),
+            history_index: 0,
             dirty: HashMap::new(),
             saved_text: String::new(),
             saved_meta: None,
@@ -421,6 +508,13 @@ impl NotesPage {
             search_selected: 0,
             search_all_notes: true,
             search_results_open: false,
+            context_open: false,
+            context_tab: ContextTab::Outline,
+            outline_cache: None,
+            backlinks: Vec::new(),
+            backlinks_for: None,
+            backlinks_generation: 0,
+            backlinks_building: false,
             search_generation: 0,
             find_open: false,
             find,
@@ -517,6 +611,11 @@ impl NotesPage {
         if page.open_note.is_none() {
             window.focus(&page.page_focus, cx);
         }
+        let weak = cx.weak_entity();
+        window.on_window_should_close(cx, move |_, cx| {
+            let _ = weak.update(cx, |page, cx| page.flush_saves(cx));
+            true
+        });
         page
     }
 
@@ -644,6 +743,7 @@ impl NotesPage {
             }
             _ => {}
         }
+        self.sync_active_tab();
         self.set_note_window_title(window);
         cx.notify();
     }
@@ -659,44 +759,36 @@ impl NotesPage {
     }
 
     pub(crate) fn open_note(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        // the outgoing note lands on disk right away — saving is automatic,
-        // so navigation never has a dirty note behind it. A write the disk
-        // moved under is parked as a conflict, never written blind; a failed
-        // write is parked in `dirty` for the retry paths.
-        if let Some(current) = self.open_note.clone() {
-            let text = self.editor.read(cx).value().to_string();
-            if text != self.saved_text {
-                match Self::write_checked(&current, &text, self.saved_meta) {
-                    Ok(true) => {
-                        self.saved_text = text;
-                        self.saved_meta = notes_core::note_meta(&current);
-                        self.dirty.remove(&current);
-                        self.conflicts.remove(&current);
-                        tracing::info!("saved {}", current.display());
-                    }
-                    Ok(false) => {
-                        self.park_conflict(current.clone(), text);
-                        self.notice(
-                            cx,
-                            NoticeKind::Error,
-                            &format!(
-                                "{} changed on disk; the unsaved buffer was kept",
-                                current.display()
-                            ),
-                        );
-                    }
-                    Err(err) => {
-                        self.dirty.insert(current, text);
-                        self.notice(cx, NoticeKind::Error, &format!("note save failed: {err}"));
-                    }
-                }
+        self.open_note_inner(path, window, cx, false, true);
+    }
+
+    fn open_note_new_tab(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_note_inner(path, window, cx, true, true);
+    }
+
+    /// Opens a note in the current tab (or in a new one), records history and
+    /// keeps the tab list coherent. A path already open activates its tab.
+    fn open_note_inner(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        new_tab: bool,
+        record_history: bool,
+    ) {
+        if let Some(index) = self.open_tabs.iter().position(|tab| tab.path == path) {
+            if index != self.active_tab {
+                self.activate_tab(index, window, cx);
             } else {
-                self.dirty.remove(&current);
+                self.editor
+                    .update(cx, |editor, cx| editor.focus(window, cx));
             }
+            if record_history {
+                self.push_history(path);
+            }
+            return;
         }
-        // a note that cannot be read (non-UTF-8, permissions, deleted
-        // underneath us) must not open as an empty-looking editor — the first
-        // save would then replace the original file with the typed fragment
+        self.save_for_navigation(cx);
         let baseline = match notes_core::read_note(&path) {
             Ok(text) => text,
             Err(err) => {
@@ -713,20 +805,55 @@ impl NotesPage {
             .get(&path)
             .cloned()
             .unwrap_or_else(|| baseline.clone());
+        let meta = notes_core::note_meta(&path);
+        let conflict = self.conflicts.contains(&path);
+        if new_tab || self.open_tabs.is_empty() {
+            self.open_tabs.push(OpenTab {
+                path: path.clone(),
+                saved_text: baseline.clone(),
+                saved_meta: meta,
+                conflict,
+            });
+            self.active_tab = self.open_tabs.len() - 1;
+        } else {
+            let tab = &mut self.open_tabs[self.active_tab];
+            tab.path = path.clone();
+            tab.saved_text = baseline.clone();
+            tab.saved_meta = meta;
+            tab.conflict = conflict;
+        }
+        self.remember_open_state(path, baseline, content, meta, conflict, window, cx);
+        if record_history {
+            self.push_history(self.open_note.clone().unwrap_or_default());
+        }
+        cx.notify();
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the tab baseline, content and metadata travel together"
+    )]
+    fn remember_open_state(
+        &mut self,
+        path: PathBuf,
+        baseline: String,
+        content: String,
+        meta: Option<notes_core::FileMeta>,
+        conflict: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.saved_text = baseline;
-        self.saved_meta = notes_core::note_meta(&path);
-        // a parked conflict survives reopening the note: autosave stays off
-        // until the user reloads or overwrites on purpose
-        self.conflict = self.conflicts.contains(&path);
-        // the bar belongs to the note it was opened on
+        self.saved_meta = meta;
+        self.conflict = conflict;
         self.find_open = false;
         self.find_hits.clear();
         self.find_index = 0;
-        let folder = path.parent().map(Path::to_path_buf);
+        self.age_cache = None;
+        self.outline_cache = None;
         self.tree_cursor = Some(path.clone());
         self.open_note = Some(path.clone());
-        // the pointer survives restarts, store-relative so a moved store
-        // keeps it (resolve_note_in_store also takes absolute paths back)
+        let folder = path.parent().map(Path::to_path_buf);
         let relative = store_relative(&self.store_root, &path);
         self.prefs.open_note = Some(relative.clone());
         self.prefs.recent.retain(|recent| recent != &relative);
@@ -734,13 +861,319 @@ impl NotesPage {
         self.prefs.recent.truncate(20);
         self.prefs.save();
         self.editor.update(cx, |state, cx| {
-            // relative image paths resolve next to the note
             state.set_base_dir(folder, cx);
             state.set_value(content, window, cx);
             state.focus(window, cx);
         });
+        self.sync_active_tab();
+        if self.context_open && self.context_tab == ContextTab::Links {
+            self.refresh_backlinks(cx);
+        }
+        self.set_note_window_title(window);
+    }
+
+    /// Saves the outgoing active tab before navigation. A failed write is
+    /// parked; a changed-on-disk write keeps the conflict so the tab can
+    /// offer Reload/Overwrite when it comes back.
+    fn save_for_navigation(&mut self, cx: &mut Context<Self>) {
+        let Some(current) = self.open_note.clone() else {
+            return;
+        };
+        let text = self.editor.read(cx).value().to_string();
+        if text != self.saved_text {
+            match Self::write_checked(&current, &text, self.saved_meta) {
+                Ok(true) => {
+                    self.saved_text = text;
+                    self.saved_meta = notes_core::note_meta(&current);
+                    self.dirty.remove(&current);
+                    self.conflicts.remove(&current);
+                    tracing::info!("saved {}", current.display());
+                }
+                Ok(false) => {
+                    self.park_conflict(current.clone(), text);
+                    self.notice(
+                        cx,
+                        NoticeKind::Error,
+                        &format!(
+                            "{} changed on disk; the unsaved buffer was kept",
+                            current.display()
+                        ),
+                    );
+                }
+                Err(err) => {
+                    self.dirty.insert(current, text);
+                    self.notice(cx, NoticeKind::Error, &format!("note save failed: {err}"));
+                }
+            }
+        } else {
+            self.dirty.remove(&current);
+        }
+        self.sync_active_tab();
+    }
+
+    fn sync_active_tab(&mut self) {
+        let Some(path) = self.open_note.clone() else {
+            return;
+        };
+        if let Some(tab) = self.open_tabs.get_mut(self.active_tab) {
+            tab.path = path;
+            tab.saved_text = self.saved_text.clone();
+            tab.saved_meta = self.saved_meta;
+            tab.conflict = self.conflict;
+        }
+    }
+
+    fn activate_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if index >= self.open_tabs.len() || index == self.active_tab {
+            return;
+        }
+        self.save_for_navigation(cx);
+        self.active_tab = index;
+        self.load_active_tab(window, cx);
+        cx.notify();
+    }
+
+    fn load_active_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.open_tabs.get(self.active_tab).cloned() else {
+            return;
+        };
+        let disk = notes_core::note_meta(&tab.path);
+        let mut baseline = tab.saved_text.clone();
+        let mut meta = tab.saved_meta;
+        let mut conflict = tab.conflict;
+        let mut content = self
+            .dirty
+            .get(&tab.path)
+            .cloned()
+            .unwrap_or_else(|| baseline.clone());
+        // A clean inactive tab follows an external edit when it comes back.
+        if !self.dirty.contains_key(&tab.path)
+            && disk != meta
+            && let Ok(text) = notes_core::read_note(&tab.path)
+        {
+            baseline = text.clone();
+            meta = disk;
+            conflict = false;
+            content = text;
+        }
+        self.remember_open_state(tab.path, baseline, content, meta, conflict, window, cx);
+    }
+
+    fn push_history(&mut self, path: PathBuf) {
+        if self.history.get(self.history_index) == Some(&path) {
+            return;
+        }
+        self.history.truncate(self.history_index + 1);
+        self.history.push(path);
+        if self.history.len() > 50 {
+            self.history.remove(0);
+        }
+        self.history_index = self.history.len().saturating_sub(1);
+    }
+
+    fn clear_active_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_note = None;
+        self.saved_text.clear();
+        self.saved_meta = None;
+        self.conflict = false;
+        self.find_open = false;
+        self.prefs.open_note = None;
+        self.prefs.save();
+        self.editor
+            .update(cx, |editor, cx| editor.set_value("", window, cx));
         self.set_note_window_title(window);
         cx.notify();
+    }
+
+    fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if index >= self.open_tabs.len() {
+            return;
+        }
+        if index == self.active_tab {
+            self.save_for_navigation(cx);
+            self.open_tabs.remove(index);
+            if self.open_tabs.is_empty() {
+                self.clear_active_note(window, cx);
+            } else {
+                self.active_tab = index.min(self.open_tabs.len() - 1);
+                self.load_active_tab(window, cx);
+            }
+        } else {
+            self.open_tabs.remove(index);
+            if index < self.active_tab {
+                self.active_tab -= 1;
+            }
+        }
+        cx.notify();
+    }
+
+    fn go_history(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.history.is_empty() {
+            return;
+        }
+        let next = (self.history_index as isize)
+            .saturating_add(delta)
+            .clamp(0, self.history.len() as isize - 1) as usize;
+        if next == self.history_index {
+            return;
+        }
+        let path = self.history[next].clone();
+        self.history_index = next;
+        self.open_note_inner(path, window, cx, false, false);
+    }
+
+    fn schedule_store_path(&mut self, cx: &mut Context<Self>) {
+        if self.store_pinned {
+            return;
+        }
+        self.store_path_generation += 1;
+        let generation = self.store_path_generation;
+        let requested = resolve_store_path(self.store_path_input.read(cx).value().trim());
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(600))
+                .await;
+            let _ = this.update(cx, |this: &mut NotesPage, cx| {
+                if this.store_path_generation == generation {
+                    this.store_path_pending = Some(requested);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn apply_store_path(
+        &mut self,
+        requested: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if requested == self.store_root {
+            return;
+        }
+        if let Err(err) = std::fs::create_dir_all(&requested) {
+            let current = self.store_root.display().to_string();
+            self.store_path_input
+                .update(cx, |field, cx| field.set_value(current, window, cx));
+            self.notice(
+                cx,
+                NoticeKind::Error,
+                &format!("cannot use that store: {err}"),
+            );
+            return;
+        }
+        self.flush_saves(cx);
+        self.store_root = requested.clone();
+        self.notes_scope = None;
+        self.prefs.notes_scope = None;
+        self.prefs.store_path = Some(requested.display().to_string());
+        self.prefs.open_note = None;
+        self.prefs
+            .recent
+            .retain(|relative| requested.join(relative).is_file());
+        self.prefs
+            .pinned
+            .retain(|relative| requested.join(relative).is_file());
+        self.prefs.save();
+        self.open_tabs.clear();
+        self.active_tab = 0;
+        self.history.clear();
+        self.history_index = 0;
+        self.open_note = None;
+        self.saved_text.clear();
+        self.saved_meta = None;
+        self.conflict = false;
+        self.dirty.clear();
+        self.conflicts.clear();
+        self.tree_cursor = None;
+        self.expanded.clear();
+        self.tree_loaded_for = None;
+        self.tree = Rc::new(Vec::new());
+        self.search_hits.clear();
+        self.search
+            .update(cx, |field, cx| field.set_value(String::new(), window, cx));
+        self.search_results_open = false;
+        self.palette_open = false;
+        self.trash_open = false;
+        self.shortcut_open = false;
+        self.context_open = false;
+        self.find_open = false;
+        self.editor
+            .update(cx, |editor, cx| editor.set_value("", window, cx));
+        let display = requested.display().to_string();
+        self.store_path_input
+            .update(cx, |field, cx| field.set_value(display, window, cx));
+        self.refresh_tree(&requested);
+        self.set_note_window_title(window);
+        self.notice(cx, NoticeKind::Info, "notes store changed");
+        cx.notify();
+    }
+
+    fn toggle_context_panel(&mut self, cx: &mut Context<Self>) {
+        self.context_open = !self.context_open;
+        if self.context_open && self.context_tab == ContextTab::Links {
+            self.refresh_backlinks(cx);
+        }
+        cx.notify();
+    }
+
+    fn set_context_tab(&mut self, tab: ContextTab, cx: &mut Context<Self>) {
+        self.context_tab = tab;
+        if tab == ContextTab::Links {
+            self.refresh_backlinks(cx);
+        }
+        cx.notify();
+    }
+
+    fn refresh_backlinks(&mut self, cx: &mut Context<Self>) {
+        let Some(open) = self.open_note.clone() else {
+            self.backlinks.clear();
+            self.backlinks_for = None;
+            self.backlinks_building = false;
+            return;
+        };
+        let Some(scope) = self.notes_root() else {
+            return;
+        };
+        let Some(name) = open.file_name() else {
+            return;
+        };
+        let target = note_key(&name.to_string_lossy());
+        let store_root = self.store_root.clone();
+        self.backlinks_generation += 1;
+        let generation = self.backlinks_generation;
+        self.backlinks_building = true;
+        self.backlinks_for = Some(target.clone());
+        self.backlinks.clear();
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let links = cx
+                .background_executor()
+                .spawn(async move { backlinks_for(&scope, &store_root, &target, &open) })
+                .await;
+            let _ = this.update(cx, |this: &mut NotesPage, cx| {
+                if this.backlinks_generation == generation {
+                    this.backlinks = links;
+                    this.backlinks_building = false;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn outline_headings(&mut self, cx: &mut Context<Self>) -> Vec<Heading> {
+        let revision = self.editor.read(cx).revision();
+        if let Some((cached, headings)) = &self.outline_cache
+            && *cached == revision
+        {
+            return headings.clone();
+        }
+        let text = self.editor.read(cx).value();
+        let headings = headings_for(&text);
+        self.outline_cache = Some((revision, headings.clone()));
+        headings
     }
 
     fn open_note_anywhere(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
@@ -877,6 +1310,16 @@ impl NotesPage {
         self.open_note_anywhere(item.path, window, cx);
     }
 
+    fn open_palette_selected_in_new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rows = self.palette_rows(cx);
+        let index = self.palette_selected.min(rows.len().saturating_sub(1));
+        let Some(item) = rows.get(index).cloned() else {
+            return;
+        };
+        self.palette_open = false;
+        self.open_note_new_tab(item.path, window, cx);
+    }
+
     /// Writes `text` to `path` only while the file still matches `expected`;
     /// `Ok(false)` means skipped because it changed on disk. No baseline
     /// (metadata unreadable) keeps the old write-through behavior.
@@ -903,6 +1346,7 @@ impl NotesPage {
         if self.open_note.as_ref() == Some(&path) {
             self.conflict = true;
         }
+        self.sync_active_tab();
     }
 
     /// Adopts a successful write as the new baseline.
@@ -912,6 +1356,7 @@ impl NotesPage {
         self.dirty.remove(path);
         self.conflicts.remove(path);
         self.conflict = false;
+        self.sync_active_tab();
     }
 
     /// Where a conflicted buffer is kept instead of over its note: the app's
@@ -1023,6 +1468,7 @@ impl NotesPage {
             }
             Err(err) => self.notice(cx, NoticeKind::Error, &format!("note save failed: {err}")),
         }
+        self.sync_active_tab();
         cx.notify();
     }
 
@@ -1079,6 +1525,7 @@ impl NotesPage {
                 tracing::warn!("could not save {} on exit: {err}", path.display());
             }
         }
+        self.sync_active_tab();
     }
 
     /// The conflict bar's Reload: drop the local buffer and re-read the note.
@@ -1104,6 +1551,7 @@ impl NotesPage {
                 &format!("cannot reload {}: {err}", path.display()),
             ),
         }
+        self.sync_active_tab();
         cx.notify();
     }
 
@@ -1120,6 +1568,7 @@ impl NotesPage {
             }
             Err(err) => self.notice(cx, NoticeKind::Error, &format!("note save failed: {err}")),
         }
+        self.sync_active_tab();
         cx.notify();
     }
 
@@ -1216,6 +1665,25 @@ impl NotesPage {
     }
 
     fn open_search_hit(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_search_hit_inner(index, false, window, cx);
+    }
+
+    fn open_search_hit_in_new_tab(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_search_hit_inner(index, true, window, cx);
+    }
+
+    fn open_search_hit_inner(
+        &mut self,
+        index: usize,
+        new_tab: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(hit) = self.search_hits.get(index).cloned() else {
             return;
         };
@@ -1224,7 +1692,11 @@ impl NotesPage {
         self.search_hits.clear();
         self.search_selected = 0;
         self.search_results_open = false;
-        self.open_note_anywhere(hit.path, window, cx);
+        if new_tab {
+            self.open_note_new_tab(hit.path, window, cx);
+        } else {
+            self.open_note_anywhere(hit.path, window, cx);
+        }
     }
 
     fn toggle_search_scope(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1384,16 +1856,33 @@ impl NotesPage {
 
         match crate::trash::trash_entry(&self.store_root, &path) {
             Ok(entry) => {
-                if affected {
-                    self.dirty
-                        .retain(|entry, _| entry != &path && !entry.starts_with(&path));
-                    self.conflicts
-                        .retain(|entry| entry != &path && !entry.starts_with(&path));
-                    self.open_note = None;
-                    self.saved_text.clear();
-                    self.find_open = false;
-                    self.prefs.open_note = None;
-                    self.prefs.save();
+                let removed_active = affected
+                    || self
+                        .open_tabs
+                        .get(self.active_tab)
+                        .is_some_and(|tab| tab.path == path || tab.path.starts_with(&path));
+                let removed_before = self.open_tabs[..self.active_tab.min(self.open_tabs.len())]
+                    .iter()
+                    .filter(|tab| tab.path == path || tab.path.starts_with(&path))
+                    .count();
+                self.open_tabs
+                    .retain(|tab| tab.path != path && !tab.path.starts_with(&path));
+                self.dirty
+                    .retain(|entry, _| entry != &path && !entry.starts_with(&path));
+                self.conflicts
+                    .retain(|entry| entry != &path && !entry.starts_with(&path));
+                if removed_active {
+                    if self.open_tabs.is_empty() {
+                        self.clear_active_note(window, cx);
+                    } else {
+                        self.active_tab = self
+                            .active_tab
+                            .saturating_sub(removed_before)
+                            .min(self.open_tabs.len() - 1);
+                        self.load_active_tab(window, cx);
+                    }
+                } else {
+                    self.active_tab = self.active_tab.saturating_sub(removed_before);
                     self.set_note_window_title(window);
                 }
                 self.expanded.retain(|folder| !folder.starts_with(&path));
@@ -1662,6 +2151,14 @@ impl NotesPage {
             });
             self.set_note_window_title(window);
         }
+        for tab in &mut self.open_tabs {
+            tab.path = rewrite_path(&tab.path, old, new);
+            tab.saved_meta = notes_core::note_meta(&tab.path);
+        }
+        self.saved_meta = self
+            .open_note
+            .as_ref()
+            .and_then(|path| notes_core::note_meta(path));
         self.dirty = self
             .dirty
             .drain()
@@ -1925,6 +2422,29 @@ impl NotesPage {
     pub fn notes_scope_for_probe(&self) -> Option<String> {
         self.notes_scope.clone()
     }
+
+    /// The open tab paths — for headless tab/history probes.
+    #[doc(hidden)]
+    pub fn tab_paths_for_probe(&self) -> Vec<PathBuf> {
+        self.open_tabs.iter().map(|tab| tab.path.clone()).collect()
+    }
+
+    #[doc(hidden)]
+    pub fn active_tab_for_probe(&self) -> usize {
+        self.active_tab
+    }
+
+    /// The store root the page is currently using.
+    #[doc(hidden)]
+    pub fn store_root_for_probe(&self) -> PathBuf {
+        self.store_root.clone()
+    }
+
+    /// The editable store field.
+    #[doc(hidden)]
+    pub fn store_path_input_handle(&self) -> &Entity<InputState> {
+        &self.store_path_input
+    }
 }
 
 fn byte_to_char(text: &str, byte: usize) -> usize {
@@ -1959,6 +2479,77 @@ fn collect_note_names(items: &[Rc<notes_core::NotesTreeItem>], names: &mut Vec<S
             names.push(item.name.clone());
         }
     }
+}
+
+fn headings_for(text: &str) -> Vec<Heading> {
+    let document = parse_document(text);
+    let mut headings = Vec::new();
+    for line in &document.lines {
+        let LiveLineKind::Heading { level, marker } = &line.kind else {
+            continue;
+        };
+        let start = marker.end;
+        let Some(label) = text.get(start..line.range.end) else {
+            continue;
+        };
+        let label = label.trim().trim_end_matches('#').trim();
+        if label.is_empty() {
+            continue;
+        }
+        headings.push(Heading {
+            level: *level,
+            label: label.to_string(),
+            byte: start,
+        });
+    }
+    headings
+}
+
+fn collect_note_paths(items: &[Rc<notes_core::NotesTreeItem>], out: &mut Vec<PathBuf>) {
+    for item in items {
+        if item.is_folder {
+            collect_note_paths(&item.children, out);
+        } else {
+            out.push(item.full_path.clone());
+        }
+    }
+}
+
+fn backlinks_for(scope: &Path, store_root: &Path, target: &str, current: &Path) -> Vec<Backlink> {
+    let mut paths = Vec::new();
+    collect_note_paths(&notes_core::load_tree(scope), &mut paths);
+    let mut seen = HashSet::new();
+    let mut links = Vec::new();
+    for path in paths {
+        if path == current || !seen.insert(path.clone()) {
+            continue;
+        }
+        let Ok(text) = notes_core::read_note(&path) else {
+            continue;
+        };
+        let document = parse_document(&text);
+        let linked = document.lines.iter().any(|line| {
+            line.objects.iter().any(|object| {
+                matches!(&object.kind, InlineObjectKind::WikiLink { target: link }
+                    if note_key(link) == target)
+            })
+        });
+        if !linked {
+            continue;
+        }
+        let title = path
+            .file_stem()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.to_string_lossy().to_string());
+        links.push(Backlink {
+            path: path.clone(),
+            title,
+            relative: store_relative(store_root, &path),
+        });
+    }
+    links.sort_by(|left, right| left.title.cmp(&right.title));
+    links.truncate(200);
+    links
 }
 
 fn collect_palette_items(
@@ -2099,6 +2690,25 @@ fn compact_path(store_root: &Path, path: &Path) -> String {
         shown
     } else {
         folder.display().to_string()
+    }
+}
+
+pub(crate) fn resolve_store_path(raw: &str) -> PathBuf {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return crate::paths::default_store_root();
+    }
+    let expanded = if raw == "~" {
+        warpui_kit_platform::paths::home()
+    } else if let Some(rest) = raw.strip_prefix("~/") {
+        warpui_kit_platform::paths::home().join(rest)
+    } else {
+        PathBuf::from(raw)
+    };
+    if expanded.is_absolute() {
+        expanded
+    } else {
+        std::path::absolute(&expanded).unwrap_or(expanded)
     }
 }
 
@@ -2274,6 +2884,9 @@ fn edited_age(path: &Path, cache: &mut Option<(PathBuf, String, std::time::Insta
 
 impl Render for NotesPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        if let Some(requested) = self.store_path_pending.take() {
+            self.apply_store_path(requested, window, cx);
+        }
         self.reload_tree();
         if std::mem::take(&mut self.note_names_stale) {
             let mut names = Vec::new();
@@ -2328,6 +2941,44 @@ impl Render for NotesPage {
                 } else if control && event.keystroke.modifiers.shift && event.keystroke.key == "e" {
                     window.focus(&this.tree_focus, cx);
                     cx.stop_propagation();
+                } else if control && event.keystroke.modifiers.shift && event.keystroke.key == "b" {
+                    this.toggle_context_panel(cx);
+                    cx.stop_propagation();
+                } else if control && event.keystroke.key == "w" {
+                    if !this.open_tabs.is_empty() {
+                        this.close_tab(this.active_tab, window, cx);
+                    }
+                    cx.stop_propagation();
+                } else if control && event.keystroke.key == "tab" {
+                    let len = this.open_tabs.len();
+                    if len > 1 {
+                        let step = if event.keystroke.modifiers.shift {
+                            len - 1
+                        } else {
+                            1
+                        };
+                        this.activate_tab((this.active_tab + step) % len, window, cx);
+                    }
+                    cx.stop_propagation();
+                } else if control
+                    && event
+                        .keystroke
+                        .key
+                        .parse::<usize>()
+                        .is_ok_and(|digit| (1..=9).contains(&digit))
+                {
+                    if let Ok(digit) = event.keystroke.key.parse::<usize>()
+                        && digit <= this.open_tabs.len()
+                    {
+                        this.activate_tab(digit - 1, window, cx);
+                    }
+                    cx.stop_propagation();
+                } else if event.keystroke.modifiers.alt
+                    && matches!(event.keystroke.key.as_str(), "left" | "right")
+                {
+                    let delta = if event.keystroke.key == "left" { -1 } else { 1 };
+                    this.go_history(delta, window, cx);
+                    cx.stop_propagation();
                 } else if control && event.keystroke.key == "/" {
                     this.shortcut_open = !this.shortcut_open;
                     cx.notify();
@@ -2378,6 +3029,8 @@ impl Render for NotesPage {
                     .id("notes-body")
                     .flex_1()
                     .min_h_0()
+                    .min_w_0()
+                    .overflow_hidden()
                     .flex()
                     .flex_row()
                     .child(self.render_rail(cx))
@@ -2472,6 +3125,338 @@ impl NotesPage {
     }
 
     /// Everything right of the rail: the list and the editor (or Settings).
+    fn render_tab_strip(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let active_text = self.editor.read(cx).value().to_string();
+        let tabs: Vec<(PathBuf, String, bool, bool)> = self
+            .open_tabs
+            .iter()
+            .enumerate()
+            .map(|(index, tab)| {
+                let dirty = if index == self.active_tab {
+                    active_text != self.saved_text
+                } else {
+                    self.dirty.contains_key(&tab.path) || tab.conflict
+                };
+                let title = tab
+                    .path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "untitled".into());
+                (tab.path.clone(), title, index == self.active_tab, dirty)
+            })
+            .collect();
+        let mut strip = div()
+            .id("notes-tab-strip")
+            .debug_selector(|| "notes-tab-strip".into())
+            .flex()
+            .flex_row()
+            .items_center()
+            .h(px(34.))
+            .flex_shrink_0()
+            .border_b_1()
+            .border_color(theme::border_light())
+            .overflow_hidden();
+        for (index, (_, title, active, dirty)) in tabs.iter().enumerate() {
+            strip = strip.child(
+                div()
+                    .id(("note-tab", index as u64))
+                    .debug_selector(move || format!("note-tab-{index}"))
+                    .a11y_button(format!("Open tab {title}"))
+                    .cursor_pointer()
+                    .h_full()
+                    .max_w(px(220.))
+                    .px_3()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .border_r_1()
+                    .border_color(theme::border_light())
+                    .when(*active, |tab| {
+                        tab.bg(theme::panel()).text_color(theme::text())
+                    })
+                    .when(!*active, |tab| {
+                        tab.text_color(theme::text_muted())
+                            .hover(|row| row.bg(theme::raised()))
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.activate_tab(index, window, cx);
+                    }))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(theme::font_row_meta()))
+                            .child(title.clone()),
+                    )
+                    .when(*dirty, |tab| {
+                        tab.child(
+                            div()
+                                .flex_shrink_0()
+                                .size(px(6.))
+                                .rounded_full()
+                                .bg(theme::CHANGES),
+                        )
+                    })
+                    .child(
+                        div()
+                            .id(("note-tab-close", index as u64))
+                            .debug_selector(move || format!("note-tab-close-{index}"))
+                            .a11y_button("Close tab")
+                            .cursor_pointer()
+                            .flex_shrink_0()
+                            .rounded(px(4.))
+                            .p_0p5()
+                            .hover(|close| close.bg(theme::raised()))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.close_tab(index, window, cx);
+                            }))
+                            .child(icon(
+                                "icons/icon-close.svg",
+                                px(theme::icon_tiny() - 2.),
+                                theme::text_faint(),
+                            )),
+                    ),
+            );
+        }
+        strip = strip.child(
+            div()
+                .id("notes-tab-new")
+                .debug_selector(|| "notes-tab-new".into())
+                .a11y_button("New tab")
+                .cursor_pointer()
+                .flex_shrink_0()
+                .size(px(26.))
+                .ml_1()
+                .rounded(px(6.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .hover(|button| button.bg(theme::raised()))
+                .on_click(cx.listener(|this, _, window, cx| this.open_palette(window, cx)))
+                .child(icon(
+                    "icons/icon-plus.svg",
+                    px(theme::icon_small() - 2.),
+                    theme::text_muted(),
+                )),
+        );
+        strip.into_any_element()
+    }
+
+    fn render_context_panel(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let tab_button = |id: &'static str, label: &'static str, active: bool| {
+            div()
+                .id(id)
+                .debug_selector(move || id.into())
+                .a11y_button(label)
+                .cursor_pointer()
+                .rounded(px(4.))
+                .px_2()
+                .py_0p5()
+                .text_size(px(theme::font_meta()))
+                .when(active, |button| {
+                    button.bg(theme::raised()).text_color(theme::text())
+                })
+                .when(!active, |button| {
+                    button
+                        .text_color(theme::text_muted())
+                        .hover(|button| button.bg(theme::raised()))
+                })
+                .child(label)
+        };
+        let mut header = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .py_2()
+            .border_b_1()
+            .border_color(theme::hairline());
+        for tab in [ContextTab::Outline, ContextTab::Links] {
+            let (id, label) = match tab {
+                ContextTab::Outline => ("context-tab-outline", "Outline"),
+                ContextTab::Links => ("context-tab-links", "Links"),
+            };
+            header = header.child(tab_button(id, label, self.context_tab == tab).on_click(
+                cx.listener(move |this, _, _, cx| {
+                    this.set_context_tab(tab, cx);
+                }),
+            ));
+        }
+        header = header
+            .child(div().flex_1())
+            .child(
+                div()
+                    .id("context-refresh")
+                    .debug_selector(|| "context-refresh".into())
+                    .a11y_button("Refresh panel")
+                    .cursor_pointer()
+                    .rounded(px(4.))
+                    .p_0p5()
+                    .hover(|button| button.bg(theme::raised()))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if this.context_tab == ContextTab::Links {
+                            this.refresh_backlinks(cx);
+                        } else {
+                            this.outline_cache = None;
+                            cx.notify();
+                        }
+                    }))
+                    .child(icon(
+                        "icons/icon-refresh.svg",
+                        px(theme::icon_tiny()),
+                        theme::text_faint(),
+                    )),
+            )
+            .child(
+                div()
+                    .id("context-close")
+                    .debug_selector(|| "context-close".into())
+                    .a11y_button("Close panel")
+                    .cursor_pointer()
+                    .rounded(px(4.))
+                    .p_0p5()
+                    .hover(|button| button.bg(theme::raised()))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.context_open = false;
+                        cx.notify();
+                    }))
+                    .child(icon(
+                        "icons/icon-close.svg",
+                        px(theme::icon_tiny()),
+                        theme::text_faint(),
+                    )),
+            );
+
+        let mut list = div()
+            .id("context-list")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap_0p5()
+            .p_2();
+        match self.context_tab {
+            ContextTab::Outline => {
+                let headings = self.outline_headings(cx);
+                if headings.is_empty() {
+                    list = list.child(
+                        div()
+                            .px_2()
+                            .py_2()
+                            .text_size(px(theme::font_meta()))
+                            .text_color(theme::text_faint())
+                            .child("No headings."),
+                    );
+                }
+                for (index, heading) in headings.iter().enumerate() {
+                    let byte = heading.byte;
+                    list = list.child(
+                        div()
+                            .id(("context-heading", index as u64))
+                            .debug_selector(move || format!("context-heading-{index}"))
+                            .a11y_button(format!("Jump to {}", heading.label))
+                            .cursor_pointer()
+                            .rounded(px(4.))
+                            .py_0p5()
+                            .pl(px(6. + heading.level.saturating_sub(1) as f32 * 10.))
+                            .pr_2()
+                            .truncate()
+                            .text_size(px(theme::font_meta()))
+                            .text_color(theme::text_dim())
+                            .hover(|row| row.bg(theme::raised()))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.editor.update(cx, |editor, cx| {
+                                    editor.focus(window, cx);
+                                    editor.set_selected_range(byte..byte, cx);
+                                });
+                                cx.notify();
+                            }))
+                            .child(heading.label.clone()),
+                    );
+                }
+            }
+            ContextTab::Links => {
+                if self.backlinks_building {
+                    list = list.child(
+                        div()
+                            .px_2()
+                            .py_2()
+                            .text_size(px(theme::font_meta()))
+                            .text_color(theme::text_faint())
+                            .child("Scanning notes…"),
+                    );
+                } else if self.backlinks.is_empty() {
+                    list = list.child(
+                        div()
+                            .px_2()
+                            .py_2()
+                            .text_size(px(theme::font_meta()))
+                            .text_color(theme::text_faint())
+                            .child("No backlinks."),
+                    );
+                }
+                for (index, link) in self.backlinks.iter().enumerate() {
+                    let path = link.path.clone();
+                    list = list.child(
+                        div()
+                            .id(("context-link", index as u64))
+                            .debug_selector(move || format!("context-link-{index}"))
+                            .a11y_button(format!("Open {}", link.title))
+                            .cursor_pointer()
+                            .rounded(px(4.))
+                            .px_2()
+                            .py_1()
+                            .flex()
+                            .flex_col()
+                            .hover(|row| row.bg(theme::raised()))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_note_anywhere(path.clone(), window, cx);
+                            }))
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(px(theme::font_body()))
+                                    .text_color(theme::text())
+                                    .child(link.title.clone()),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(px(theme::font_meta()))
+                                    .text_color(theme::text_faint())
+                                    .child(link.relative.clone()),
+                            ),
+                    );
+                }
+            }
+        }
+
+        div()
+            .id("notes-context-panel")
+            .debug_selector(|| "notes-context-panel".into())
+            .w(px(theme::CONTEXT_WIDTH))
+            .h_full()
+            .flex_shrink_0()
+            .border_l_1()
+            .border_color(theme::border_light())
+            .bg(theme::panel())
+            .flex()
+            .flex_col()
+            .child(header)
+            .child(list)
+            .into_any_element()
+    }
+
+    /// Everything right of the rail: the list and the editor (or Settings).
+    /// Everything right of the rail: the list and the editor (or Settings).
     fn render_body(
         &mut self,
         note_title: String,
@@ -2482,44 +3467,63 @@ impl NotesPage {
         match self.section {
             Section::Settings => self.render_settings(window, cx),
             Section::Notes => {
-                let mut panes = shell::panes();
+                let mut panes = shell::panes().min_w_0();
                 if self.list_visible {
                     panes = panes
                         .child(self.render_tree(window, cx))
                         .child(self.render_splitter(cx));
                 }
-                panes
+                let mut detail = div()
+                    .id("notes-detail")
+                    .debug_selector(|| "notes-detail".into())
+                    .flex()
+                    .flex_row()
+                    .flex_1()
+                    .w_full()
+                    .h_full()
+                    .min_h_0()
+                    .min_w_0()
+                    .overflow_hidden()
                     .child(
-                        shell::detail_pane().child(
-                            div()
-                                .id("notes-editor-column")
-                                .debug_selector(|| "notes-editor-column".into())
-                                .flex_1()
-                                .min_w_0()
-                                .w_full()
-                                .max_w(px(theme::scaled(shell::READING_WIDTH)))
-                                .mx_auto()
-                                .h_full()
-                                .flex()
-                                .flex_col()
-                                .min_h_0()
-                                .when(self.open_note.is_some(), |column| {
-                                    // the head is the open file's name; with
-                                    // nothing open the empty state speaks
-                                    column.child(self.render_editor_head(note_title, dirty, cx))
-                                })
-                                .when(self.open_note.is_some() && self.conflict, |column| {
-                                    column.child(self.render_conflict_bar(cx))
-                                })
-                                .when(self.find_open, |column| {
-                                    column.child(self.render_find_bar(window, cx))
-                                })
-                                .child(self.render_editor(cx))
-                                .when(self.open_note.is_some(), |column| {
-                                    column.child(self.render_status_bar(cx))
-                                }),
-                        ),
-                    )
+                        div()
+                            .id("notes-editor-column")
+                            .debug_selector(|| "notes-editor-column".into())
+                            .flex_1()
+                            .flex_shrink(1.)
+                            .min_w_0()
+                            .h_full()
+                            .flex()
+                            .flex_col()
+                            .min_h_0()
+                            .when(!self.context_open, |column| {
+                                column
+                                    .max_w(px(theme::scaled(shell::READING_WIDTH)))
+                                    .mx_auto()
+                            })
+                            .when(!self.open_tabs.is_empty(), |column| {
+                                column.child(self.render_tab_strip(cx))
+                            })
+                            .when(self.open_note.is_some(), |column| {
+                                // the head is the open file's name; with
+                                // nothing open the empty state speaks
+                                column.child(self.render_editor_head(note_title, dirty, cx))
+                            })
+                            .when(self.open_note.is_some() && self.conflict, |column| {
+                                column.child(self.render_conflict_bar(cx))
+                            })
+                            .when(self.find_open, |column| {
+                                column.child(self.render_find_bar(window, cx))
+                            })
+                            .child(self.render_editor(cx))
+                            .when(self.open_note.is_some(), |column| {
+                                column.child(self.render_status_bar(cx))
+                            }),
+                    );
+                if self.context_open {
+                    detail = detail.child(self.render_context_panel(window, cx));
+                }
+                panes
+                    .child(shell::detail_pane().child(detail))
                     .into_any_element()
             }
         }
@@ -2700,18 +3704,18 @@ impl NotesPage {
             );
         }
         Some(
-            motion::enter(
-                ("toast-enter", notice.seq),
-                div()
-                    .absolute()
-                    .bottom_3()
-                    .right_3()
-                    .flex()
-                    .flex_col()
-                    .items_end()
-                    .child(toast),
-            )
-            .into_any_element(),
+            div()
+                .absolute()
+                .bottom_3()
+                .right_3()
+                .flex()
+                .flex_col()
+                .items_end()
+                // The animation sets `position: relative` for its rise; it must
+                // live INSIDE the absolute layer or the toast joins the root
+                // flex column and pushes the whole page up.
+                .child(motion::enter(("toast-enter", notice.seq), toast))
+                .into_any_element(),
         )
     }
 
@@ -2752,6 +3756,18 @@ impl NotesPage {
                     let path = path.clone();
                     move |this, _, window, cx| {
                         this.open_tree_entry(path.clone(), is_folder, window, cx);
+                    }
+                }),
+            ))
+            .child(menu_item(
+                "notes-menu-open-tab",
+                "Open in new tab",
+                cx.listener({
+                    let path = path.clone();
+                    move |this, _, window, cx| {
+                        this.row_menu = None;
+                        this.tree_cursor = Some(path.clone());
+                        this.open_note_new_tab(path.clone(), window, cx);
                     }
                 }),
             ))
@@ -3246,6 +4262,7 @@ impl NotesPage {
             .role(gpui::Role::Dialog)
             .occlude()
             .w(px(theme::PROMPT_WIDTH + 60.))
+            .max_h(px(600.))
             .rounded(px(8.))
             .border_1()
             .border_color(theme::line_strong())
@@ -3269,7 +4286,13 @@ impl NotesPage {
                     .text_color(theme::text_muted())
                     .child("The editor keeps its own arrow keys while it has focus."),
             )
-            .child(rows)
+            .child(
+                div()
+                    .id("shortcut-list")
+                    .max_h(px(470.))
+                    .overflow_y_scroll()
+                    .child(rows),
+            )
             .child(
                 div().flex().flex_row().justify_end().child(
                     div()
@@ -3405,7 +4428,13 @@ impl NotesPage {
                                     this.palette_selected = this.palette_selected.saturating_sub(1);
                                     cx.notify();
                                 }
-                                "enter" => this.open_palette_selected(window, cx),
+                                "enter" => {
+                                    if event.keystroke.modifiers.control {
+                                        this.open_palette_selected_in_new_tab(window, cx);
+                                    } else {
+                                        this.open_palette_selected(window, cx);
+                                    }
+                                }
                                 _ => return,
                             }
                             cx.stop_propagation();
@@ -3851,7 +4880,19 @@ impl NotesPage {
                                             cx.notify();
                                         }
                                         "enter" => {
-                                            this.open_search_hit(this.search_selected, window, cx)
+                                            if event.keystroke.modifiers.control {
+                                                this.open_search_hit_in_new_tab(
+                                                    this.search_selected,
+                                                    window,
+                                                    cx,
+                                                );
+                                            } else {
+                                                this.open_search_hit(
+                                                    this.search_selected,
+                                                    window,
+                                                    cx,
+                                                );
+                                            }
                                         }
                                         _ => return,
                                     }
@@ -3880,7 +4921,15 @@ impl NotesPage {
                                     cx.notify();
                                     cx.stop_propagation();
                                 } else if event.keystroke.key == "enter" {
-                                    this.open_search_hit(this.search_selected, window, cx);
+                                    if event.keystroke.modifiers.control {
+                                        this.open_search_hit_in_new_tab(
+                                            this.search_selected,
+                                            window,
+                                            cx,
+                                        );
+                                    } else {
+                                        this.open_search_hit(this.search_selected, window, cx);
+                                    }
                                     cx.stop_propagation();
                                 }
                             },
@@ -3901,6 +4950,30 @@ impl NotesPage {
                     .gap_1()
                     .when(self.section == Section::Notes, |row| {
                         row.child(crate::ui::window_button(
+                            "notes-back",
+                            "icons/icon-arrow-left.svg",
+                            theme::raised().into(),
+                            "Back",
+                            SHOW_TOOLTIPS,
+                            cx.listener(|this, _, window, cx| this.go_history(-1, window, cx)),
+                        ))
+                        .child(crate::ui::window_button(
+                            "notes-forward",
+                            "icons/icon-arrow-right.svg",
+                            theme::raised().into(),
+                            "Forward",
+                            SHOW_TOOLTIPS,
+                            cx.listener(|this, _, window, cx| this.go_history(1, window, cx)),
+                        ))
+                        .child(crate::ui::window_button(
+                            "notes-context-toggle",
+                            "icons/icon-panel-right.svg",
+                            theme::raised().into(),
+                            "Outline and links",
+                            SHOW_TOOLTIPS,
+                            cx.listener(|this, _, _, cx| this.toggle_context_panel(cx)),
+                        ))
+                        .child(crate::ui::window_button(
                             "notes-refresh",
                             "icons/icon-refresh.svg",
                             theme::raised().into(),
@@ -4690,6 +5763,12 @@ impl NotesPage {
         cx: &mut Context<Self>,
     ) {
         let key = event.keystroke.key.as_str();
+        if event.keystroke.modifiers.alt && matches!(key, "left" | "right") {
+            let delta = if key == "left" { -1 } else { 1 };
+            self.go_history(delta, window, cx);
+            cx.stop_propagation();
+            return;
+        }
         if event.keystroke.modifiers.control && key == "d" {
             if let Some(path) = self.tree_cursor.clone() {
                 self.duplicate_path(path, window, cx);
@@ -5199,6 +6278,18 @@ mod tests {
         assert!(fuzzy_score("pn", "projects/note.md").is_some());
         assert!(fuzzy_score("NOTE", "projects/note.md").is_some());
         assert!(fuzzy_score("zzz", "projects/note.md").is_none());
+    }
+
+    #[test]
+    fn outline_headings_carry_their_byte_offsets() {
+        let headings = super::headings_for("# Note\n\n## Section\n");
+        assert_eq!(headings[0].label, "Note");
+        assert_eq!(headings[0].byte, 2);
+        assert_eq!(headings[1].level, 2);
+        assert_eq!(
+            &"# Note\n\n## Section\n"[headings[1].byte..][..7],
+            "Section"
+        );
     }
 
     #[test]

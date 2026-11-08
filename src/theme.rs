@@ -34,6 +34,9 @@ pub const TRASH_WIDTH: f32 = 620.;
 /// The Ctrl+P quick-open card.
 pub const PALETTE_WIDTH: f32 = 580.;
 
+/// The right-hand Outline/Backlinks panel.
+pub const CONTEXT_WIDTH: f32 = 260.;
+
 // ---- gpui-kit theme mapping ------------------------------------------------
 
 /// Map the family palette onto gpui-kit's shadcn-style theme tokens. Call

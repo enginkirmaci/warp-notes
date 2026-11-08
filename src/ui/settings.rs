@@ -41,7 +41,7 @@ impl NotesPage {
     /// rows, the same list-and-detail pair every other screen uses.
     pub(crate) fn render_settings(
         &mut self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let active = self.settings_section;
@@ -128,7 +128,13 @@ impl NotesPage {
             );
 
         let rows = match active {
-            SettingsSection::General => vec![self.store_row(), self.trash_row(cx), self.text_row()],
+            SettingsSection::General => {
+                vec![
+                    self.store_row(window, cx),
+                    self.trash_row(cx),
+                    self.text_row(),
+                ]
+            }
             SettingsSection::Appearance => vec![self.palette_row(), self.motion_row(cx)],
         };
 
@@ -175,21 +181,49 @@ impl NotesPage {
             .into_any_element()
     }
 
-    fn store_row(&mut self) -> gpui::AnyElement {
+    fn store_row(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        if self.store_pinned {
+            return kit::row_with_desc(
+                "settings-row-Store",
+                "Notes store",
+                "Warp Station launches this window with --store; edit its notes_store_path there.",
+                div()
+                    .min_w_0()
+                    .max_w(px(360.))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .font_family(SharedString::from(theme::code_font()))
+                    .text_size(px(theme::font_mono_meta()))
+                    .text_color(theme::text_dim())
+                    .child(SharedString::from(self.store_root.display().to_string())),
+                true,
+            );
+        }
+        let control = div()
+            .w(px(340.))
+            .max_w(px(0.46 * warpui_kit_core::shell::READING_WIDTH))
+            .min_w_0()
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key == "enter" {
+                    let requested = crate::ui::notes::resolve_store_path(
+                        this.store_path_input.read(cx).value().trim(),
+                    );
+                    this.apply_store_path(requested, window, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .child(warpui_kit_core::field::mono(
+                "field-notes-store",
+                &self.store_path_input,
+                window,
+                cx,
+            ));
         kit::row_with_desc(
             "settings-row-Store",
             "Notes store",
-            "Repo notes live under projects/. Warp Station passes its notes_store_path here.",
-            div()
-                .min_w_0()
-                .max_w(px(360.))
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis()
-                .font_family(SharedString::from(theme::code_font()))
-                .text_size(px(theme::font_mono_meta()))
-                .text_color(theme::text_dim())
-                .child(SharedString::from(self.store_root.display().to_string())),
+            "Repo notes live under projects/. Changes apply immediately; an empty field means ~/notes.",
+            control,
             true,
         )
     }

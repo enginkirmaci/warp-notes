@@ -85,6 +85,37 @@ fn set_palette(cx: &mut VisualTestContext, page: &gpui::Entity<NotesPage>, value
     cx.update(|window, cx| drop(window.draw(cx)));
 }
 
+/// Points HOME at the scenario while the guard lives; a standalone launch
+/// (no `--store`) resolves its store from it.
+struct HomeSwap {
+    prior: Vec<(&'static str, Option<std::ffi::OsString>)>,
+}
+
+impl HomeSwap {
+    fn set(home: &std::path::Path) -> Self {
+        let prior = ["HOME", "USERPROFILE"]
+            .into_iter()
+            .map(|key| (key, std::env::var_os(key)))
+            .collect::<Vec<_>>();
+        for (key, _) in &prior {
+            // SAFETY: process-global env, serialized by HOME_LOCK
+            unsafe { std::env::set_var(key, home) };
+        }
+        Self { prior }
+    }
+}
+
+impl Drop for HomeSwap {
+    fn drop(&mut self) {
+        for (key, value) in self.prior.drain(..) {
+            match value {
+                Some(value) => unsafe { std::env::set_var(key, value) },
+                None => unsafe { std::env::remove_var(key) },
+            }
+        }
+    }
+}
+
 fn temp_home(prefix: &str) -> PathBuf {
     let home = std::env::temp_dir().join(format!("{prefix}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
@@ -2196,6 +2227,359 @@ fn full_results_open_beyond_the_popup_cap(cx: &mut TestAppContext) {
     );
     click(cx, "search-results-close");
     assert!(bounds(cx, "search-results-card").is_none());
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+fn set_store_path(cx: &mut VisualTestContext, page: &gpui::Entity<NotesPage>, value: &str) {
+    let input = page.read_with(cx, |page, _| page.store_path_input_handle().clone());
+    cx.update(|window, cx| {
+        input.update(cx, |field, cx| {
+            field.set_value(value.to_string(), window, cx);
+            field.focus(window, cx);
+        });
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes("enter");
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(800));
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+    cx.update(|window, cx| drop(window.draw(cx)));
+}
+
+fn type_editor(cx: &mut VisualTestContext, text: &str) {
+    let live = bounds(cx, "notes-live").expect("the live editor renders");
+    cx.simulate_click(
+        Point::new(
+            live.origin.x + live.size.width / 2.,
+            live.origin.y + live.size.height / 2.,
+        ),
+        Modifiers::default(),
+    );
+    cx.run_until_parked();
+    cx.simulate_input(text);
+    cx.run_until_parked();
+}
+
+#[gpui::test]
+fn tabs_keep_their_buffers_and_close(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-tabs");
+    let alpha = home.join("notes/projects/alpha");
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    click(cx, "note-item-note.md");
+    type_editor(cx, " first buffer");
+    click_str(cx, "note-actions-task.md");
+    click(cx, "notes-menu-open-tab");
+    type_editor(cx, " second buffer");
+    click_str(cx, "note-actions-list.md");
+    click(cx, "notes-menu-open-tab");
+    assert_eq!(
+        page.read_with(cx, |page, _| page.tab_paths_for_probe()),
+        vec![
+            alpha.join("note.md"),
+            alpha.join("task.md"),
+            alpha.join("list.md")
+        ]
+    );
+    assert!(bounds(cx, "notes-tab-strip").is_some());
+
+    click(cx, "note-tab-0");
+    page.read_with(cx, |page, cx| {
+        assert!(page.editor_value(cx).contains("first buffer"));
+    });
+    click(cx, "note-tab-1");
+    page.read_with(cx, |page, cx| {
+        assert!(page.editor_value(cx).contains("second buffer"));
+    });
+    assert_eq!(page.read_with(cx, |page, _| page.active_tab_for_probe()), 1);
+
+    click(cx, "note-tab-close-1");
+    assert_eq!(
+        page.read_with(cx, |page, _| page.tab_paths_for_probe())
+            .len(),
+        2
+    );
+    assert_eq!(
+        page.read_with(cx, |page, _| page.open_note_path()),
+        Some(alpha.join("list.md"))
+    );
+    cx.simulate_keystrokes("ctrl-tab");
+    assert_eq!(page.read_with(cx, |page, _| page.active_tab_for_probe()), 0);
+    cx.simulate_keystrokes("ctrl-shift-tab");
+    assert_eq!(page.read_with(cx, |page, _| page.active_tab_for_probe()), 1);
+
+    cx.simulate_keystrokes("ctrl-w ctrl-w");
+    assert!(
+        page.read_with(cx, |page, _| page.tab_paths_for_probe())
+            .is_empty()
+    );
+    assert!(bounds(cx, "notes-tab-strip").is_none());
+    assert_eq!(cx.window_title().as_deref(), Some("Warp Notes"));
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn ctrl_enter_opens_quick_open_in_a_new_tab(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-tabs-palette");
+    let alpha = home.join("notes/projects/alpha");
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    click(cx, "note-item-note.md");
+    cx.simulate_keystrokes("ctrl-p");
+    set_palette(cx, &page, "task");
+    cx.simulate_keystrokes("ctrl-enter");
+    assert_eq!(
+        page.read_with(cx, |page, _| page.tab_paths_for_probe()),
+        vec![alpha.join("note.md"), alpha.join("task.md")]
+    );
+    assert_eq!(
+        page.read_with(cx, |page, _| page.open_note_path()),
+        Some(alpha.join("task.md"))
+    );
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn back_forward_walks_the_open_history(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-history");
+    let alpha = home.join("notes/projects/alpha");
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    click(cx, "note-item-note.md");
+    click(cx, "note-item-task.md");
+    click(cx, "note-item-list.md");
+    cx.simulate_keystrokes("alt-left");
+    assert_eq!(
+        page.read_with(cx, |page, _| page.open_note_path()),
+        Some(alpha.join("task.md"))
+    );
+    cx.simulate_keystrokes("alt-left");
+    assert_eq!(
+        page.read_with(cx, |page, _| page.open_note_path()),
+        Some(alpha.join("note.md"))
+    );
+    cx.simulate_keystrokes("alt-right");
+    assert_eq!(
+        page.read_with(cx, |page, _| page.open_note_path()),
+        Some(alpha.join("task.md"))
+    );
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn a_toast_floats_without_shrinking_the_page(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-toast-float");
+    let (handle, _page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    click(cx, "note-item-note.md");
+    let before = bounds(cx, "notes-editor-column").expect("the editor column");
+    click_str(cx, "note-actions-note.md");
+    click(cx, "notes-menu-pin");
+    let after = bounds(cx, "notes-editor-column").expect("the editor column");
+    assert_eq!(
+        before, after,
+        "the floating toast must not join the root flex column"
+    );
+    assert!(bounds(cx, "notes-toast").is_some());
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn store_path_setting_is_editable_and_applies(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    let home = temp_home("warpnotes-probe-store-path");
+    let _home = HomeSwap::set(&home);
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: None,
+            repo_scope: None,
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    click(cx, "rail-settings");
+    assert!(
+        bounds(cx, "field-notes-store").is_some(),
+        "the store is editable"
+    );
+    let vault = home.join("vault");
+    set_store_path(cx, &page, vault.to_string_lossy().as_ref());
+    page.read_with(cx, |page, _| {
+        assert_eq!(page.store_root_for_probe(), vault);
+    });
+    assert!(vault.is_dir(), "the chosen store is created");
+    let prefs: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.join("settings.json")).unwrap())
+            .unwrap();
+    assert_eq!(prefs["store_path"], vault.to_string_lossy().as_ref());
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn a_store_launched_with_store_is_read_only(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-store-pinned");
+    let (handle, _page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: None,
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    click(cx, "rail-settings");
+    assert!(
+        bounds(cx, "field-notes-store").is_none(),
+        "--store wins; the path is shown read-only"
+    );
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn outline_lists_headings_and_jumps(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-outline");
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    click(cx, "note-item-note.md");
+    click(cx, "notes-context-toggle");
+    assert!(bounds(cx, "notes-context-panel").is_some());
+    assert!(bounds(cx, "context-heading-0").is_some());
+    click(cx, "context-heading-0");
+    page.read_with(cx, |page, cx| {
+        assert_eq!(page.editor_selected_range(cx).start, 2);
+    });
+    click(cx, "context-close");
+    assert!(bounds(cx, "notes-context-panel").is_none());
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn backlinks_list_the_linking_note(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-backlinks");
+    let alpha = home.join("notes/projects/alpha");
+    let beta = home.join("notes/projects/beta/beta.md");
+    std::fs::write(alpha.join("note.md"), "# Note\n\nsee [[beta]]\n").unwrap();
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: None,
+            open_note: Some(beta.clone()),
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    click(cx, "notes-context-toggle");
+    click(cx, "context-tab-links");
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+    assert!(
+        bounds(cx, "context-link-0").is_some(),
+        "the alpha note links to beta"
+    );
+    click(cx, "context-link-0");
+    page.read_with(cx, |page, _| {
+        assert_eq!(page.open_note_path(), Some(alpha.join("note.md")));
+    });
 
     let _ = std::fs::remove_dir_all(&home);
 }

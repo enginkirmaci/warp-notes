@@ -52,6 +52,10 @@ warp-notes [--store <path>] [--repo <name>] [--root] [--note <path>]
   One repository per folder under `<store>/projects/`; notes that belong to no
   repo live at the store root. It is shared with Warp Station through
   `warpui_kit_platform::notes`; keep the on-disk format compatible.
+- A standalone launch uses `UiPrefs.store_path` when set; Settings edits the
+  path and applies it immediately (flush the old tabs, clear them, reload the
+  tree). `--store` wins and makes that row read-only, because the next Warp
+  Station launch would pass its setting again.
 - Trash lives at `<store>/.warp-notes/trash/<deleted-ms>-<4hex>/`: a `path`
   text file holds the store-relative original and `payload` is the moved
   file or folder. Trash is store-root-scoped even when the tree is pinned to
@@ -75,8 +79,9 @@ cargo build -p warp-notes
 - `tests/notes_probe.rs` covers the real window: tree, opening a note, the
   live editor, row actions, keyboard tree/search selection, Trash/Undo and
   the Trash dialog, quick open, recent/pinned notes, store-wide and full
-  search, task checkboxes, list continuation, wikilinks, and the
-  `--repo`/`--root`/`--note` launch contract.
+  search, tabs/back-forward, the Outline/Backlinks panel, task checkboxes,
+  list continuation, wikilinks, and the `--repo`/`--root`/`--note` launch
+  contract.
 - `tests/layout_migration.rs` drives the scratch-HOME migration end to end.
   HOME is process-global, so scenarios take turns behind its lock.
 - The capture hook is `WARP_NOTES_PAGE=settings`.
