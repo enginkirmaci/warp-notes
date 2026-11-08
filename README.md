@@ -29,6 +29,9 @@ from DevTools into its own repo. Rust/GPUI (gpui-kit 0.9), one crate.
   pinned and recent notes come first. The row menu pins/unpins, and a pinned
   section sits above the tree. Opening a note from another repo drops the
   current repo pin so the tree can show it.
+- The title-bar search is store-wide by default; its popup scope chip narrows
+  to the pinned repo. `Ctrl+Shift+F` (or "See all results") opens the full
+  result list with highlighted excerpts.
 - A single live editor that works like Obsidian's live preview: markdown
   renders in place while typing with its syntax hidden until the caret touches
   it, checkboxes toggle on click, Enter continues lists, links and

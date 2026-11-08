@@ -105,11 +105,16 @@ const SEARCH_W: f32 = 460.;
 /// is a glance; the tree is the way to everything.
 const SEARCH_POPUP_ROWS: usize = 8;
 
+/// The full results view is a list, but a 2000-hit store must not lay out
+/// every row at once.
+const SEARCH_RESULTS_ROWS: usize = 200;
+
 const SHOW_TOOLTIPS: bool = true;
 
 const SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl+P", "Quick open"),
     ("Ctrl+K", "Search notes"),
+    ("Ctrl+Shift+F", "Full search results"),
     ("Ctrl+Shift+E", "Focus the tree"),
     ("Up / Down", "Move the tree cursor"),
     ("Left / Right", "Collapse / expand"),
@@ -247,6 +252,10 @@ pub struct NotesPage {
     search_hits: Vec<notes_core::NotesSearchHit>,
     /// The search popup's keyboard selection.
     search_selected: usize,
+    /// Search every note in the store, or only the pinned repo's tree.
+    search_all_notes: bool,
+    /// The full results view opened from the popup or Ctrl+Shift+F.
+    search_results_open: bool,
     /// Debounce sequence; a keystroke invalidates any in-flight search.
     search_generation: u32,
     /// Ctrl+F in the editor: the find bar, its byte ranges and the current hit.
@@ -410,6 +419,8 @@ impl NotesPage {
             search,
             search_hits: Vec::new(),
             search_selected: 0,
+            search_all_notes: true,
+            search_results_open: false,
             search_generation: 0,
             find_open: false,
             find,
@@ -786,6 +797,7 @@ impl NotesPage {
         self.row_menu = None;
         self.trash_open = false;
         self.shortcut_open = false;
+        self.search_results_open = false;
         self.palette_input.update(cx, |field, cx| {
             field.set_value(String::new(), window, cx);
             field.focus(window, cx);
@@ -1176,8 +1188,13 @@ impl NotesPage {
             cx.notify();
             return;
         }
-        let Some(root) = self.notes_root() else {
-            return;
+        let root = if self.search_all_notes {
+            self.store_root.clone()
+        } else {
+            let Some(root) = self.notes_root() else {
+                return;
+            };
+            root
         };
         cx.spawn(async move |this, cx| {
             cx.background_executor()
@@ -1206,7 +1223,43 @@ impl NotesPage {
             .update(cx, |field, cx| field.set_value(String::new(), window, cx));
         self.search_hits.clear();
         self.search_selected = 0;
-        self.open_note(hit.path, window, cx);
+        self.search_results_open = false;
+        self.open_note_anywhere(hit.path, window, cx);
+    }
+
+    fn toggle_search_scope(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.notes_scope.is_none() {
+            return;
+        }
+        self.search_all_notes = !self.search_all_notes;
+        let term = self.search.read(cx).value().to_string();
+        self.run_search(term, cx);
+        self.search.update(cx, |field, cx| field.focus(window, cx));
+        cx.notify();
+    }
+
+    fn open_search_results(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.search.read(cx).value().trim().is_empty() {
+            return;
+        }
+        self.search_results_open = true;
+        self.search_selected = 0;
+        self.palette_open = false;
+        self.trash_open = false;
+        self.shortcut_open = false;
+        self.search.update(cx, |field, cx| field.focus(window, cx));
+        cx.notify();
+    }
+
+    fn close_search_results(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_results_open = false;
+        if self.open_note.is_some() {
+            self.editor
+                .update(cx, |editor, cx| editor.focus(window, cx));
+        } else {
+            window.focus(&self.tree_focus, cx);
+        }
+        cx.notify();
     }
 
     fn create_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1439,6 +1492,7 @@ impl NotesPage {
         self.prompt = None;
         self.palette_open = false;
         self.shortcut_open = false;
+        self.search_results_open = false;
         self.trash_open = true;
         cx.notify();
     }
@@ -1520,6 +1574,7 @@ impl NotesPage {
         });
         self.prompt = Some(PromptState { kind, target });
         self.row_menu = None;
+        self.search_results_open = false;
         cx.notify();
     }
 
@@ -1794,8 +1849,12 @@ impl NotesPage {
     /// cannot wait out the field's 180 ms debounce on a real timer.
     #[doc(hidden)]
     pub fn run_search_for_probe(&mut self, term: String, cx: &mut Context<Self>) {
-        self.search_hits = self
-            .notes_root()
+        let root = if self.search_all_notes {
+            Some(self.store_root.clone())
+        } else {
+            self.notes_root()
+        };
+        self.search_hits = root
             .map(|root| notes_core::search(&root, &term))
             .unwrap_or_default();
         cx.notify();
@@ -2067,6 +2126,46 @@ fn rewrite_path(path: &Path, old: &Path, new: &Path) -> PathBuf {
     }
 }
 
+fn match_ranges(text: &str, term: &str) -> Vec<std::ops::Range<usize>> {
+    if term.is_empty() {
+        return Vec::new();
+    }
+    let lower = text.to_lowercase();
+    let term = term.to_lowercase();
+    if lower.len() != text.len() {
+        // Lowercasing changed the byte length (a non-ASCII case pair), so the
+        // offsets would not map back to the original string.
+        return Vec::new();
+    }
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    while let Some(found) = lower[start..].find(&term) {
+        let begin = start + found;
+        let end = begin + term.len();
+        ranges.push(begin..end);
+        start = end.max(begin + 1);
+    }
+    ranges
+}
+
+fn highlighted_excerpt(window: &mut Window, text: &str, term: &str) -> gpui::AnyElement {
+    let mut style = window.text_style();
+    style.font_size = gpui::AbsoluteLength::Pixels(px(theme::font_meta()));
+    style.color = theme::text_faint().into();
+    let highlight = gpui::HighlightStyle {
+        background_color: Some(theme::accent_soft().into()),
+        font_weight: Some(FontWeight::SEMIBOLD),
+        ..Default::default()
+    };
+    let highlights: Vec<_> = match_ranges(text, term)
+        .into_iter()
+        .map(|range| (range, highlight))
+        .collect();
+    gpui::StyledText::new(text.to_string())
+        .with_default_highlights(&style, highlights)
+        .into_any_element()
+}
+
 fn rewrite_pref_list(list: &mut [String], store_root: &Path, old: &Path, new: &Path) {
     for entry in list {
         let absolute = store_root.join(&*entry);
@@ -2223,6 +2322,9 @@ impl Render for NotesPage {
                 } else if control && event.keystroke.key == "p" {
                     this.open_palette(window, cx);
                     cx.stop_propagation();
+                } else if control && event.keystroke.modifiers.shift && event.keystroke.key == "f" {
+                    this.open_search_results(window, cx);
+                    cx.stop_propagation();
                 } else if control && event.keystroke.modifiers.shift && event.keystroke.key == "e" {
                     window.focus(&this.tree_focus, cx);
                     cx.stop_propagation();
@@ -2283,7 +2385,9 @@ impl Render for NotesPage {
             )
             .relative();
         // the search results float over the panes, under the title bar field
-        if let Some(popup) = self.render_search_popup(window, cx) {
+        if !self.search_results_open
+            && let Some(popup) = self.render_search_popup(window, cx)
+        {
             root = root.child(popup);
         }
         if let Some(toasts) = self.render_toasts(cx) {
@@ -2303,6 +2407,9 @@ impl Render for NotesPage {
         }
         if self.palette_open {
             root = root.child(self.render_palette(window, cx));
+        }
+        if self.search_results_open {
+            root = root.child(self.render_search_results(window, cx));
         }
         root
     }
@@ -3346,6 +3453,198 @@ impl NotesPage {
             .child(card)
             .into_any_element()
     }
+
+    fn render_search_results(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let term = self.search.read(cx).value().trim().to_string();
+        let hits = self.search_hits.clone();
+        let shown = hits.len().min(SEARCH_RESULTS_ROWS);
+        let selected = self.search_selected.min(shown.saturating_sub(1));
+        let mut list = div()
+            .id("search-results-list")
+            .debug_selector(|| "search-results-list".into())
+            .flex()
+            .flex_col()
+            .gap_1()
+            .max_h(px(470.))
+            .overflow_y_scroll();
+        if hits.is_empty() {
+            list = list.child(
+                div()
+                    .py_4()
+                    .text_size(px(theme::font_body()))
+                    .text_color(theme::text_faint())
+                    .child("No matches."),
+            );
+        }
+        for (index, hit) in hits.iter().take(shown).enumerate() {
+            let path = hit.path.clone();
+            let title = hit.title.clone();
+            let relative = hit.relative.clone();
+            let excerpt = hit.excerpt.clone();
+            list = list.child(
+                div()
+                    .id(("search-result", index as u64))
+                    .debug_selector(move || format!("search-result-{index}"))
+                    .a11y_button(format!("{} — {}", hit.title, hit.excerpt))
+                    .cursor_pointer()
+                    .rounded(px(6.))
+                    .px_2()
+                    .py_1p5()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .when(index == selected, |row| row.bg(theme::raised()))
+                    .hover(|row| row.bg(theme::raised()))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.search
+                            .update(cx, |field, cx| field.set_value(String::new(), window, cx));
+                        this.search_hits.clear();
+                        this.search_selected = 0;
+                        this.open_note_anywhere(path.clone(), window, cx);
+                        this.search_results_open = false;
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(px(theme::font_body()))
+                                    .text_color(theme::text())
+                                    .child(title),
+                            )
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(px(theme::font_meta()))
+                                    .text_color(theme::text_faint())
+                                    .child(relative),
+                            ),
+                    )
+                    .child(highlighted_excerpt(window, &excerpt, &term)),
+            );
+        }
+        let scope_label = if self.search_all_notes {
+            "All notes".to_string()
+        } else {
+            self.notes_scope.clone().unwrap_or_else(|| "Repo".into())
+        };
+        let card = div()
+            .id("search-results-card")
+            .debug_selector(|| "search-results-card".into())
+            .role(gpui::Role::Dialog)
+            .occlude()
+            .w(px(760.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(theme::line_strong())
+            .bg(theme::panel())
+            .shadow_lg()
+            .p_4()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" {
+                    this.close_search_results(window, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(theme::font_screen_title()))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme::text())
+                            .child(format!("Search: {term}")),
+                    )
+                    .child(
+                        div()
+                            .id("search-results-scope")
+                            .debug_selector(|| "search-results-scope".into())
+                            .a11y_button("Search scope")
+                            .cursor_pointer()
+                            .rounded(px(4.))
+                            .px_1p5()
+                            .py_0p5()
+                            .bg(theme::raised())
+                            .text_size(px(theme::font_micro()))
+                            .text_color(theme::text_muted())
+                            .hover(|chip| chip.bg(theme::accent_soft()))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.toggle_search_scope(window, cx);
+                            }))
+                            .child(scope_label),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(theme::font_meta()))
+                            .text_color(theme::text_faint())
+                            .child(format!("{shown} of {}", hits.len())),
+                    ),
+            )
+            .child(list)
+            .child(
+                div().flex().flex_row().justify_end().child(
+                    div()
+                        .id("search-results-close")
+                        .debug_selector(|| "search-results-close".into())
+                        .a11y_button("Close results")
+                        .cursor_pointer()
+                        .rounded(px(6.))
+                        .h(px(theme::scaled(shell::CONTROL_HEIGHT) - 8.))
+                        .px_3()
+                        .flex()
+                        .items_center()
+                        .bg(theme::accent())
+                        .text_color(theme::on_accent())
+                        .text_size(px(theme::font_control()))
+                        .font_weight(FontWeight::MEDIUM)
+                        .hover(|button| button.opacity(0.9))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.close_search_results(window, cx);
+                        }))
+                        .child("Close"),
+                ),
+            );
+        div()
+            .id("search-results-scrim")
+            .debug_selector(|| "search-results-scrim".into())
+            .absolute()
+            .inset_0()
+            .occlude()
+            .bg(theme::SCRIM)
+            .flex()
+            .items_center()
+            .justify_center()
+            .p_4()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    this.close_search_results(window, cx);
+                }),
+            )
+            .child(card)
+            .into_any_element()
+    }
 }
 impl NotesPage {
     /// The floating window paints its own title bar: the window is created
@@ -3531,7 +3830,33 @@ impl NotesPage {
                         // belongs to the search while it has text
                         .on_key_down(cx.listener(
                             |this, event: &gpui::KeyDownEvent, window, cx| {
-                                if event.keystroke.key == "escape" {
+                                if this.search_results_open {
+                                    match event.keystroke.key.as_str() {
+                                        "escape" => this.close_search_results(window, cx),
+                                        "down" => {
+                                            if !this.search_hits.is_empty() {
+                                                let last = this
+                                                    .search_hits
+                                                    .len()
+                                                    .min(SEARCH_RESULTS_ROWS)
+                                                    .saturating_sub(1);
+                                                this.search_selected =
+                                                    (this.search_selected + 1).min(last);
+                                                cx.notify();
+                                            }
+                                        }
+                                        "up" => {
+                                            this.search_selected =
+                                                this.search_selected.saturating_sub(1);
+                                            cx.notify();
+                                        }
+                                        "enter" => {
+                                            this.open_search_hit(this.search_selected, window, cx)
+                                        }
+                                        _ => return,
+                                    }
+                                    cx.stop_propagation();
+                                } else if event.keystroke.key == "escape" {
                                     this.search.update(cx, |field, cx| {
                                         field.set_value(String::new(), window, cx)
                                     });
@@ -4111,7 +4436,44 @@ impl NotesPage {
             return None;
         }
         let hits = &self.search_hits;
-        let mut rows = div().flex().flex_col().gap_0p5();
+        let scope_label = if self.search_all_notes {
+            "All notes".to_string()
+        } else {
+            self.notes_scope.clone().unwrap_or_else(|| "Repo".into())
+        };
+        let mut rows = div().flex().flex_col().gap_0p5().child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .py_1()
+                .child(
+                    div()
+                        .id("search-scope-chip")
+                        .debug_selector(|| "search-scope-chip".into())
+                        .a11y_button("Search scope")
+                        .cursor_pointer()
+                        .rounded(px(4.))
+                        .px_1p5()
+                        .py_0p5()
+                        .bg(theme::raised())
+                        .text_size(px(theme::font_micro()))
+                        .text_color(theme::text_muted())
+                        .hover(|chip| chip.bg(theme::accent_soft()))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.toggle_search_scope(window, cx);
+                        }))
+                        .child(scope_label),
+                )
+                .child(
+                    div()
+                        .text_size(px(theme::font_meta()))
+                        .text_color(theme::text_faint())
+                        .child(format!("{} hit(s)", hits.len())),
+                ),
+        );
         if hits.is_empty() {
             rows = rows.child(
                 div()
@@ -4147,7 +4509,8 @@ impl NotesPage {
                         this.search
                             .update(cx, |field, cx| field.set_value(String::new(), window, cx));
                         this.search_hits.clear();
-                        this.open_note(path.clone(), window, cx);
+                        this.search_results_open = false;
+                        this.open_note_anywhere(path.clone(), window, cx);
                     }))
                     .child(
                         div()
@@ -4170,11 +4533,20 @@ impl NotesPage {
         if hits.len() > SEARCH_POPUP_ROWS {
             rows = rows.child(
                 div()
+                    .id("notes-search-all")
+                    .debug_selector(|| "notes-search-all".into())
+                    .a11y_button("See all results")
+                    .cursor_pointer()
+                    .rounded(px(4.))
                     .px_2()
                     .py_1()
                     .text_size(px(theme::font_meta()))
-                    .text_color(theme::text_faint())
-                    .child(format!("{} more", hits.len() - SEARCH_POPUP_ROWS)),
+                    .text_color(theme::accent_ink())
+                    .hover(|row| row.bg(theme::raised()))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_search_results(window, cx);
+                    }))
+                    .child(format!("See all {} results", hits.len())),
             );
         }
         Some(
@@ -4817,7 +5189,7 @@ impl NotesPage {
 
 #[cfg(test)]
 mod tests {
-    use super::fuzzy_score;
+    use super::{fuzzy_score, match_ranges};
 
     #[test]
     fn fuzzy_score_prefers_prefix_and_boundary_matches() {
@@ -4827,5 +5199,18 @@ mod tests {
         assert!(fuzzy_score("pn", "projects/note.md").is_some());
         assert!(fuzzy_score("NOTE", "projects/note.md").is_some());
         assert!(fuzzy_score("zzz", "projects/note.md").is_none());
+    }
+
+    #[test]
+    fn search_highlight_ranges_cover_every_match() {
+        assert_eq!(
+            match_ranges("a needle and needle", "needle"),
+            vec![2..8, 13..19]
+        );
+        assert!(match_ranges("no match", "needle").is_empty());
+        assert!(
+            match_ranges("İstanbul", "i").is_empty(),
+            "unsafe offsets are dropped"
+        );
     }
 }

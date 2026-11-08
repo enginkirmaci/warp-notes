@@ -2031,6 +2031,175 @@ fn quick_open_skips_the_hidden_app_folder(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+#[gpui::test]
+fn search_finds_notes_in_other_repos_and_drops_the_pin(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-search-all");
+    let beta = home.join("notes/projects/beta/beta.md");
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    cx.update(|window, cx| {
+        let field = page.read(cx).search_handle().clone();
+        field.update(cx, |field, cx| field.set_value("beta", window, cx));
+        page.update(cx, |page, cx| page.run_search_for_probe("beta".into(), cx));
+        drop(window.draw(cx));
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+    assert!(
+        cx.read_entity(&page, |page, app| page.search_hit_count(app)) >= 1,
+        "a repo-pinned window still searches the whole store"
+    );
+    click_str(cx, "notes-search-hit-beta");
+    page.read_with(cx, |page, _| {
+        assert_eq!(page.open_note_path(), Some(beta.clone()));
+        assert_eq!(page.notes_scope_for_probe(), None);
+    });
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn search_scope_chip_narrows_to_the_pinned_repo(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-search-scope");
+    let (handle, _page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    cx.update(|window, cx| {
+        let field = _page.read(cx).search_handle().clone();
+        field.update(cx, |field, cx| field.set_value("beta", window, cx));
+        _page.update(cx, |page, cx| page.run_search_for_probe("beta".into(), cx));
+        drop(window.draw(cx));
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+    assert!(
+        bounds(cx, "search-scope-chip").is_some(),
+        "the scope chip is in the popup"
+    );
+    click(cx, "search-scope-chip");
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(300));
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+    assert_eq!(
+        cx.read_entity(&_page, |page, app| page.search_hit_count(app)),
+        0,
+        "the pinned repo has no beta note"
+    );
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn ctrl_shift_f_opens_the_full_results(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-search-shortcut");
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    cx.update(|window, cx| {
+        let field = page.read(cx).search_handle().clone();
+        field.update(cx, |field, cx| field.set_value("alpha", window, cx));
+        page.update(cx, |page, cx| page.run_search_for_probe("alpha".into(), cx));
+        drop(window.draw(cx));
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes("ctrl-shift-f");
+    assert!(bounds(cx, "search-results-card").is_some());
+    click(cx, "search-results-close");
+    assert!(bounds(cx, "search-results-card").is_none());
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn full_results_open_beyond_the_popup_cap(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-search-full");
+    let notes = home.join("notes/projects/alpha");
+    for index in 0..20 {
+        std::fs::write(notes.join(format!("shared-{index:02}.md")), "shared body\n").unwrap();
+    }
+    let (handle, _page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    cx.update(|window, cx| {
+        let field = _page.read(cx).search_handle().clone();
+        field.update(cx, |field, cx| field.set_value("shared", window, cx));
+        _page.update(cx, |page, cx| {
+            page.run_search_for_probe("shared".into(), cx)
+        });
+        drop(window.draw(cx));
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+    assert!(
+        bounds(cx, "notes-search-all").is_some(),
+        "the popup offers the full view"
+    );
+    click(cx, "notes-search-all");
+    assert!(bounds(cx, "search-results-card").is_some());
+    assert!(
+        bounds(cx, "search-result-3").is_some(),
+        "the list goes past the popup cap"
+    );
+    click(cx, "search-results-close");
+    assert!(bounds(cx, "search-results-card").is_none());
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 /// Everything the user arranges comes back on relaunch: the open note, the
 /// tree's expanded folders, the hidden list pane, the rail's section and the
 /// scope the up button reached.
