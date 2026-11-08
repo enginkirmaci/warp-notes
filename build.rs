@@ -1,7 +1,7 @@
 fn main() {
-    // Windows only: embed the app icon so Explorer, shortcuts and the
-    // taskbar show the app mark. The winresource build-dep is windows-gated,
-    // so this block must vanish on every other host.
+    // Windows only: embed the app icon so Explorer, shortcuts and the taskbar
+    // show the mark. The winresource build-dep is windows-gated, so this block
+    // must vanish on every other host.
     #[cfg(target_os = "windows")]
     {
         println!("cargo:rerun-if-changed=packaging/windows/warp-notes.ico");

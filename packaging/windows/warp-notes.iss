@@ -1,5 +1,5 @@
 ; Inno Setup 6 script — per-user installer for Warp Notes.
-; build.ps1 -Installer invokes this with /DMyAppVersion=<cargo version>;
+; build.ps1 invokes this with /DMyAppVersion=<suite version>;
 ; the fallback below keeps plain `ISCC warp-notes.iss` working too.
 
 #ifndef MyAppVersion

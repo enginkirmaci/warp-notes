@@ -1,46 +1,42 @@
 [package]
 name = "warp-notes"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 description = "WarpNotes — per-repo markdown notes with an Obsidian-style live editor"
-license = "GPL-3.0"
+license.workspace = true
+publish = false
 
-[lib]
-name = "warp_notes"
-path = "src/lib.rs"
+# src/lib.rs is the probe boundary (tests/ build the real views); the binary is
+# a thin bootstrap over it. Both targets come from cargo's defaults.
 
-[[bin]]
-name = "warp-notes"
-path = "src/main.rs"
+[dependencies]
+# suite crates — the paths live in [workspace.dependencies]
+warpui-kit-core = { workspace = true }
+warpui-kit-markdown = { workspace = true, features = ["mermaid", "all-languages"] }
+warpui-kit-platform = { workspace = true }
 
-[target.'cfg(windows)'.build-dependencies]
-winresource = "0.1"
+# the gpui stack, pinned at the workspace root
+gpui = { workspace = true }
+gpui_platform = { workspace = true }
+gpui-kit = { workspace = true }
+
+# third-party
+anyhow = { workspace = true }
+chrono = { workspace = true }
+# debug-embed: embed assets at compile time in debug builds too — without it
+# rust-embed resolves "assets" against the process CWD at runtime, so the app
+# only finds its icons when launched from the repo root
+rust-embed = { workspace = true, features = ["debug-embed"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-appender = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 # headless UI probes (tests/); feature-unifies with the normal gpui-kit dep
 # only under `cargo test`
-gpui-kit = { version = "0.9", features = ["test-support"] }
+gpui-kit = { workspace = true, features = ["test-support"] }
 
-[dependencies]
-# the shared component family (local sibling repos; swap to version deps to publish)
-warpui-kit-core = { path = "../../kits/warpui-kit-core" }
-warpui-kit-platform = { path = "../../kits/warpui-kit-platform" }
-warpui-kit-markdown = { path = "../../kits/warpui-kit-markdown", features = ["mermaid", "all-languages"] }
-
-# gpui-pre: crates.io snapshots of zed's gpui, pinned to the exact rev
-# gpui-kit 0.9 is built against these exact 0.3.11 snapshots. Bump together with gpui-kit.
-gpui = { package = "gpui-pre", version = "=0.3.11" }
-gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features = ["wayland", "x11"] }
-gpui-kit = { version = "0.9" }
-
-anyhow = "1"
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-tracing-appender = "0.2"
-# debug-embed: embed assets at compile time in debug builds too — without it
-# rust-embed resolves "assets" against the process CWD at runtime, so the app
-# only finds its icons when launched from the repo root
-rust-embed = { version = "8", features = ["debug-embed"] }
+[target.'cfg(windows)'.build-dependencies]
+winresource = { workspace = true }
