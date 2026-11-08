@@ -31,6 +31,9 @@ pub const PROMPT_WIDTH: f32 = 420.;
 /// The Trash dialog card.
 pub const TRASH_WIDTH: f32 = 620.;
 
+/// The Ctrl+P quick-open card.
+pub const PALETTE_WIDTH: f32 = 580.;
+
 // ---- gpui-kit theme mapping ------------------------------------------------
 
 /// Map the family palette onto gpui-kit's shadcn-style theme tokens. Call

@@ -7,7 +7,7 @@
 //! through. Paths are stored relative to the notes store root, so a store
 //! that moves house does not strand them.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use warpui_kit_core::shell;
@@ -28,6 +28,10 @@ pub struct UiPrefs {
     pub open_note: Option<String>,
     /// The tree's expanded folders, relative to the notes store root.
     pub expanded: Vec<String>,
+    /// Recently opened notes, newest first, relative to the store root.
+    pub recent: Vec<String>,
+    /// Pinned notes, relative to the store root.
+    pub pinned: Vec<String>,
     /// The repo scope a `--repo` launch pinned or the up button reached.
     pub notes_scope: Option<String>,
 }
@@ -42,6 +46,8 @@ impl Default for UiPrefs {
             settings_section: "general".into(),
             open_note: None,
             expanded: Vec::new(),
+            recent: Vec::new(),
+            pinned: Vec::new(),
             notes_scope: None,
         }
     }
@@ -90,8 +96,28 @@ impl UiPrefs {
         if self.settings_section != "general" && self.settings_section != "appearance" {
             self.settings_section = "general".into();
         }
+        self.recent = normalize_relative_list(self.recent, 20);
+        self.pinned = normalize_relative_list(self.pinned, 200);
         self
     }
+}
+
+fn normalize_relative_list(paths: Vec<String>, cap: usize) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for path in paths {
+        let path = path.trim().replace('\\', "/");
+        if path.is_empty()
+            || Path::new(&path).is_absolute()
+            || path.split('/').any(|part| part == "..")
+        {
+            continue;
+        }
+        if !normalized.contains(&path) {
+            normalized.push(path);
+        }
+    }
+    normalized.truncate(cap);
+    normalized
 }
 
 /// Redirects the prefs file — the headless probes point it at a temp dir so a
@@ -124,6 +150,8 @@ mod tests {
             settings_section: "appearance".into(),
             open_note: Some("alpha/note.md".into()),
             expanded: vec!["alpha".into(), "alpha/sub".into()],
+            recent: vec!["alpha/note.md".into(), "beta/note.md".into()],
+            pinned: vec!["alpha/note.md".into()],
             notes_scope: Some("alpha".into()),
         };
         let text = serde_json::to_string(&prefs).unwrap();
@@ -135,6 +163,8 @@ mod tests {
         assert_eq!(parsed.settings_section, "appearance");
         assert_eq!(parsed.open_note.as_deref(), Some("alpha/note.md"));
         assert_eq!(parsed.expanded, vec!["alpha", "alpha/sub"]);
+        assert_eq!(parsed.recent, vec!["alpha/note.md", "beta/note.md"]);
+        assert_eq!(parsed.pinned, vec!["alpha/note.md"]);
         assert_eq!(parsed.notes_scope.as_deref(), Some("alpha"));
 
         let legacy: UiPrefs = serde_json::from_str("{\"list_width\": 400}").unwrap();
@@ -143,6 +173,25 @@ mod tests {
         assert_eq!(legacy.section, "notes");
         assert_eq!(legacy.open_note, None);
         assert_eq!(legacy.expanded, Vec::<String>::new());
+        assert!(legacy.recent.is_empty());
+        assert!(legacy.pinned.is_empty());
+    }
+
+    #[test]
+    fn recent_and_pinned_lists_normalize_and_dedupe() {
+        let prefs = UiPrefs {
+            recent: vec![
+                "alpha\\note.md".into(),
+                "alpha/note.md".into(),
+                "../escape.md".into(),
+                String::new(),
+            ],
+            pinned: vec!["beta/note.md".into(), "beta/note.md".into()],
+            ..UiPrefs::default()
+        }
+        .normalized();
+        assert_eq!(prefs.recent, vec!["alpha/note.md"]);
+        assert_eq!(prefs.pinned, vec!["beta/note.md"]);
     }
 
     /// A mangled file is the defaults, and a saved width outside the shell's

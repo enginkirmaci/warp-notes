@@ -108,6 +108,7 @@ const SEARCH_POPUP_ROWS: usize = 8;
 const SHOW_TOOLTIPS: bool = true;
 
 const SHORTCUTS: &[(&str, &str)] = &[
+    ("Ctrl+P", "Quick open"),
     ("Ctrl+K", "Search notes"),
     ("Ctrl+Shift+E", "Focus the tree"),
     ("Up / Down", "Move the tree cursor"),
@@ -168,6 +169,13 @@ struct RowMenu {
     is_folder: bool,
     x: f32,
     y: f32,
+}
+
+#[derive(Clone, Debug)]
+struct PaletteItem {
+    path: PathBuf,
+    title: String,
+    relative: String,
 }
 
 pub struct NotesPage {
@@ -264,6 +272,11 @@ pub struct NotesPage {
     row_menu: Option<RowMenu>,
     /// The Trash dialog: list, restore, empty.
     trash_open: bool,
+    /// Ctrl+P quick open over the whole store.
+    palette_open: bool,
+    palette_input: Entity<InputState>,
+    palette_items: Vec<PaletteItem>,
+    palette_selected: usize,
     /// The transient toast: save/create/delete outcomes, bottom right.
     notice: Option<Notice>,
     /// The next toast's sequence number.
@@ -295,6 +308,14 @@ impl NotesPage {
         let create_folder =
             cx.new(|cx| InputState::new(window, cx).placeholder("Folder (optional)"));
         let prompt_input = cx.new(|cx| InputState::new(window, cx).placeholder("Name"));
+        let palette_input = cx.new(|cx| InputState::new(window, cx).placeholder("Open a note…"));
+        cx.subscribe(&palette_input, |this, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.palette_selected = 0;
+                cx.notify();
+            }
+        })
+        .detach();
         cx.subscribe(&search, |this, field, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 this.run_search(field.read(cx).value().to_string(), cx);
@@ -404,10 +425,27 @@ impl NotesPage {
             prompt_input,
             row_menu: None,
             trash_open: false,
+            palette_open: false,
+            palette_input,
+            palette_items: Vec::new(),
+            palette_selected: 0,
             notice: None,
             notice_seq: 0,
             titlebar_should_move: false,
         };
+        // A store that moved or lost files must not leave dead quick-open
+        // rows; the lists are store-relative, so prune before the first open.
+        let recent_before = page.prefs.recent.clone();
+        let pinned_before = page.prefs.pinned.clone();
+        page.prefs
+            .recent
+            .retain(|relative| page.store_root.join(relative).is_file());
+        page.prefs
+            .pinned
+            .retain(|relative| page.store_root.join(relative).is_file());
+        if page.prefs.recent != recent_before || page.prefs.pinned != pinned_before {
+            page.prefs.save();
+        }
         // --note: the requested note opens right away, tree expanded to it.
         // Contained like every other store path — a stray --note must not
         // reach (or on save, overwrite) a file outside the store.
@@ -678,12 +716,11 @@ impl NotesPage {
         self.open_note = Some(path.clone());
         // the pointer survives restarts, store-relative so a moved store
         // keeps it (resolve_note_in_store also takes absolute paths back)
-        self.prefs.open_note = Some(
-            path.strip_prefix(&self.store_root)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .replace('\\', "/"),
-        );
+        let relative = store_relative(&self.store_root, &path);
+        self.prefs.open_note = Some(relative.clone());
+        self.prefs.recent.retain(|recent| recent != &relative);
+        self.prefs.recent.insert(0, relative);
+        self.prefs.recent.truncate(20);
         self.prefs.save();
         self.editor.update(cx, |state, cx| {
             // relative image paths resolve next to the note
@@ -693,6 +730,139 @@ impl NotesPage {
         });
         self.set_note_window_title(window);
         cx.notify();
+    }
+
+    fn open_note_anywhere(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let outside_scope = self
+            .notes_root()
+            .is_some_and(|scope| !path.starts_with(&scope));
+        if outside_scope {
+            self.notes_scope = None;
+            self.prefs.notes_scope = None;
+            self.prefs.save();
+            self.tree_loaded_for = None;
+        }
+        if let Some(scope) = self.notes_root() {
+            self.refresh_tree(&scope);
+        }
+        self.expand_to(&path);
+        self.remember_expanded();
+        self.open_note(path, window, cx);
+    }
+
+    fn is_pinned(&self, path: &Path) -> bool {
+        let relative = store_relative(&self.store_root, path);
+        self.prefs.pinned.iter().any(|pinned| pinned == &relative)
+    }
+
+    fn toggle_pin(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let relative = store_relative(&self.store_root, path);
+        if let Some(index) = self
+            .prefs
+            .pinned
+            .iter()
+            .position(|pinned| pinned == &relative)
+        {
+            self.prefs.pinned.remove(index);
+            self.notice(cx, NoticeKind::Info, "note unpinned");
+        } else {
+            self.prefs.pinned.insert(0, relative);
+            self.prefs.pinned.truncate(200);
+            self.notice(cx, NoticeKind::Info, "note pinned");
+        }
+        self.prefs.save();
+        cx.notify();
+    }
+
+    fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut items = Vec::new();
+        let tree = notes_core::load_tree(&self.store_root);
+        collect_palette_items(&tree, &self.store_root, &mut items);
+        items.sort_by(|left, right| left.relative.cmp(&right.relative));
+        self.palette_items = items;
+        self.palette_open = true;
+        self.palette_selected = 0;
+        self.prompt = None;
+        self.row_menu = None;
+        self.trash_open = false;
+        self.shortcut_open = false;
+        self.palette_input.update(cx, |field, cx| {
+            field.set_value(String::new(), window, cx);
+            field.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    fn close_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.palette_open = false;
+        self.palette_items.clear();
+        if self.open_note.is_some() {
+            self.editor
+                .update(cx, |editor, cx| editor.focus(window, cx));
+        } else {
+            window.focus(&self.tree_focus, cx);
+        }
+        cx.notify();
+    }
+
+    fn palette_rows(&self, cx: &Context<Self>) -> Vec<PaletteItem> {
+        let query = self.palette_input.read(cx).value().trim().to_lowercase();
+        let mut rows: Vec<(i32, PaletteItem)> = Vec::new();
+        if query.is_empty() {
+            let mut seen = HashSet::new();
+            for relative in &self.prefs.pinned {
+                if let Some(item) = self
+                    .palette_items
+                    .iter()
+                    .find(|item| &item.relative == relative)
+                    && seen.insert(item.path.clone())
+                {
+                    rows.push((2, item.clone()));
+                }
+            }
+            for relative in &self.prefs.recent {
+                if let Some(item) = self
+                    .palette_items
+                    .iter()
+                    .find(|item| &item.relative == relative)
+                    && seen.insert(item.path.clone())
+                {
+                    rows.push((1, item.clone()));
+                }
+            }
+            for item in &self.palette_items {
+                if seen.insert(item.path.clone()) {
+                    rows.push((0, item.clone()));
+                }
+            }
+        } else {
+            for item in &self.palette_items {
+                let score = fuzzy_score(&query, &item.title)
+                    .into_iter()
+                    .chain(fuzzy_score(&query, &item.relative))
+                    .max();
+                if let Some(score) = score {
+                    rows.push((score, item.clone()));
+                }
+            }
+            rows.sort_by(|left, right| {
+                right
+                    .0
+                    .cmp(&left.0)
+                    .then_with(|| left.1.relative.cmp(&right.1.relative))
+            });
+        }
+        rows.into_iter().map(|(_, item)| item).take(12).collect()
+    }
+
+    fn open_palette_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rows = self.palette_rows(cx);
+        let index = self.palette_selected.min(rows.len().saturating_sub(1));
+        let Some(item) = rows.get(index).cloned() else {
+            return;
+        };
+        self.palette_open = false;
+        self.open_note_anywhere(item.path, window, cx);
     }
 
     /// Writes `text` to `path` only while the file still matches `expected`;
@@ -1181,6 +1351,13 @@ impl NotesPage {
                 {
                     self.tree_cursor = path.parent().map(Path::to_path_buf);
                 }
+                let relative = store_relative(&self.store_root, &path);
+                let under = |entry: &String| {
+                    entry == &relative || entry.starts_with(&format!("{relative}/"))
+                };
+                self.prefs.pinned.retain(|entry| !under(entry));
+                self.prefs.recent.retain(|entry| !under(entry));
+                self.prefs.save();
                 self.remember_expanded();
                 self.refresh_tree(&scope);
                 self.notice_with_action(
@@ -1260,6 +1437,8 @@ impl NotesPage {
     pub(crate) fn open_trash_dialog(&mut self, cx: &mut Context<Self>) {
         self.row_menu = None;
         self.prompt = None;
+        self.palette_open = false;
+        self.shortcut_open = false;
         self.trash_open = true;
         cx.notify();
     }
@@ -1447,6 +1626,9 @@ impl NotesPage {
             .tree_cursor
             .as_ref()
             .map(|path| rewrite_path(path, old, new));
+        rewrite_pref_list(&mut self.prefs.recent, &self.store_root, old, new);
+        rewrite_pref_list(&mut self.prefs.pinned, &self.store_root, old, new);
+        self.prefs.save();
         self.remember_expanded();
         self.age_cache = None;
         self.note_names_stale = true;
@@ -1672,6 +1854,18 @@ impl NotesPage {
     pub fn search_selected_for_probe(&self) -> usize {
         self.search_selected
     }
+
+    /// The quick-open filter field — for headless palette probes.
+    #[doc(hidden)]
+    pub fn palette_input_handle(&self) -> &Entity<InputState> {
+        &self.palette_input
+    }
+
+    /// The settled repo scope — for headless scope-drop probes.
+    #[doc(hidden)]
+    pub fn notes_scope_for_probe(&self) -> Option<String> {
+        self.notes_scope.clone()
+    }
 }
 
 fn byte_to_char(text: &str, byte: usize) -> usize {
@@ -1705,6 +1899,67 @@ fn collect_note_names(items: &[Rc<notes_core::NotesTreeItem>], names: &mut Vec<S
         } else {
             names.push(item.name.clone());
         }
+    }
+}
+
+fn collect_palette_items(
+    items: &[Rc<notes_core::NotesTreeItem>],
+    store_root: &Path,
+    out: &mut Vec<PaletteItem>,
+) {
+    for item in items {
+        if item.is_folder {
+            collect_palette_items(&item.children, store_root, out);
+        } else {
+            out.push(PaletteItem {
+                path: item.full_path.clone(),
+                title: item
+                    .name
+                    .trim_end_matches(".md")
+                    .trim_end_matches(".MD")
+                    .to_string(),
+                relative: store_relative(store_root, &item.full_path),
+            });
+        }
+    }
+}
+
+fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
+    if query.is_empty() {
+        return Some(0);
+    }
+    let query = query.to_lowercase();
+    let candidate = candidate.to_lowercase();
+    let mut query_chars = query.chars();
+    let mut wanted = query_chars.next()?;
+    let mut score = 0i32;
+    let mut streak = 0i32;
+    let mut matched = 0usize;
+    for (index, ch) in candidate.chars().enumerate() {
+        if ch != wanted {
+            streak = 0;
+            continue;
+        }
+        score += 10 + streak * 6;
+        let boundary = index == 0
+            || matches!(
+                candidate.chars().nth(index.saturating_sub(1)),
+                Some('/' | '\\' | ' ' | '_' | '-' | '.')
+            );
+        if boundary {
+            score += 14;
+        }
+        streak += 1;
+        matched += 1;
+        let Some(next) = query_chars.next() else {
+            break;
+        };
+        wanted = next;
+    }
+    if matched == query.chars().count() {
+        Some(score - candidate.len() as i32 / 8)
+    } else {
+        None
     }
 }
 
@@ -1809,6 +2064,16 @@ fn rewrite_path(path: &Path, old: &Path, new: &Path) -> PathBuf {
     match path.strip_prefix(old) {
         Ok(relative) => new.join(relative),
         Err(_) => path.to_path_buf(),
+    }
+}
+
+fn rewrite_pref_list(list: &mut [String], store_root: &Path, old: &Path, new: &Path) {
+    for entry in list {
+        let absolute = store_root.join(&*entry);
+        let rewritten = rewrite_path(&absolute, old, new);
+        if rewritten != absolute {
+            *entry = store_relative(store_root, &rewritten);
+        }
     }
 }
 
@@ -1955,6 +2220,9 @@ impl Render for NotesPage {
                     // the design's Ctrl+K: the title bar's search field
                     this.search.update(cx, |field, cx| field.focus(window, cx));
                     cx.stop_propagation();
+                } else if control && event.keystroke.key == "p" {
+                    this.open_palette(window, cx);
+                    cx.stop_propagation();
                 } else if control && event.keystroke.modifiers.shift && event.keystroke.key == "e" {
                     window.focus(&this.tree_focus, cx);
                     cx.stop_propagation();
@@ -2032,6 +2300,9 @@ impl Render for NotesPage {
         }
         if self.shortcut_open {
             root = root.child(self.render_shortcuts(cx));
+        }
+        if self.palette_open {
+            root = root.child(self.render_palette(window, cx));
         }
         root
     }
@@ -2349,6 +2620,7 @@ impl NotesPage {
         let y = menu.y.clamp(8., max_y);
         let path = menu.path.clone();
         let is_folder = menu.is_folder;
+        let pinned = self.is_pinned(&path);
         let card = div()
             .id("notes-row-menu")
             .debug_selector(|| "notes-row-menu".into())
@@ -2447,6 +2719,17 @@ impl NotesPage {
                     move |this, _, _, cx| {
                         this.row_menu = None;
                         this.copy_entry_path(&path, cx);
+                    }
+                }),
+            ))
+            .child(menu_item(
+                "notes-menu-pin",
+                if pinned { "Unpin note" } else { "Pin note" },
+                cx.listener({
+                    let path = path.clone();
+                    move |this, _, _, cx| {
+                        this.row_menu = None;
+                        this.toggle_pin(&path, cx);
                     }
                 }),
             ))
@@ -2919,6 +3202,145 @@ impl NotesPage {
                 cx.listener(|this, _, _, cx| {
                     this.shortcut_open = false;
                     cx.notify();
+                }),
+            )
+            .child(card)
+            .into_any_element()
+    }
+
+    fn render_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let rows = self.palette_rows(cx);
+        let row_count = rows.len();
+        let selected = self.palette_selected.min(row_count.saturating_sub(1));
+        let mut list = div().flex().flex_col().gap_0p5();
+        if rows.is_empty() {
+            list = list.child(
+                div()
+                    .px_2()
+                    .py_4()
+                    .text_size(px(theme::font_body()))
+                    .text_color(theme::text_faint())
+                    .child("No notes."),
+            );
+        }
+        for (index, item) in rows.iter().enumerate() {
+            let path = item.path.clone();
+            list = list.child(
+                div()
+                    .id(("palette-row", index as u64))
+                    .debug_selector(move || format!("palette-row-{index}"))
+                    .a11y_button(format!("{} — {}", item.title, item.relative))
+                    .cursor_pointer()
+                    .rounded(px(6.))
+                    .px_2()
+                    .py_1p5()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .when(index == selected, |row| row.bg(theme::raised()))
+                    .hover(|row| row.bg(theme::raised()))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.palette_selected = index;
+                        this.open_note_anywhere(path.clone(), window, cx);
+                        this.palette_open = false;
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(theme::font_body()))
+                            .text_color(theme::text())
+                            .child(item.title.clone()),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(theme::font_meta()))
+                            .text_color(theme::text_faint())
+                            .child(item.relative.clone()),
+                    ),
+            );
+        }
+        let card = div()
+            .id("palette-card")
+            .debug_selector(|| "palette-card".into())
+            .role(gpui::Role::Dialog)
+            .occlude()
+            .w(px(theme::PALETTE_WIDTH))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(theme::line_strong())
+            .bg(theme::panel())
+            .shadow_lg()
+            .p_3()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .on_key_down(cx.listener(
+                        move |this, event: &gpui::KeyDownEvent, window, cx| {
+                            match event.keystroke.key.as_str() {
+                                "escape" => this.close_palette(window, cx),
+                                "down" => {
+                                    if row_count > 0 {
+                                        this.palette_selected =
+                                            (this.palette_selected + 1).min(row_count - 1);
+                                        cx.notify();
+                                    }
+                                }
+                                "up" => {
+                                    this.palette_selected = this.palette_selected.saturating_sub(1);
+                                    cx.notify();
+                                }
+                                "enter" => this.open_palette_selected(window, cx),
+                                _ => return,
+                            }
+                            cx.stop_propagation();
+                        },
+                    ))
+                    .child(warpui_kit_core::field::text(
+                        "field-palette",
+                        &self.palette_input,
+                        window,
+                        cx,
+                    )),
+            )
+            .child(
+                div()
+                    .id("palette-list")
+                    .max_h(px(420.))
+                    .overflow_y_scroll()
+                    .child(list),
+            )
+            .child(
+                div()
+                    .text_size(px(theme::font_meta()))
+                    .text_color(theme::text_faint())
+                    .child("Enter to open · Esc to close · pinned and recent first"),
+            );
+        div()
+            .id("palette-scrim")
+            .debug_selector(|| "palette-scrim".into())
+            .absolute()
+            .inset_0()
+            .occlude()
+            .bg(theme::SCRIM)
+            .flex()
+            .items_start()
+            .justify_center()
+            .pt(px(96.))
+            .px_4()
+            .pb_4()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    this.close_palette(window, cx);
                 }),
             )
             .child(card)
@@ -3570,8 +3992,104 @@ impl NotesPage {
                 )
             });
 
+        if let Some(pinned) = self.render_pinned(cx) {
+            tree = tree.child(pinned);
+        }
         tree = tree.child(self.render_tree_list(cx));
         tree.into_any_element()
+    }
+
+    fn render_pinned(&mut self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let scope = self.notes_root();
+        let pinned: Vec<PathBuf> = self
+            .prefs
+            .pinned
+            .iter()
+            .map(|relative| self.store_root.join(relative))
+            .filter(|path| path.is_file())
+            .filter(|path| scope.as_ref().is_none_or(|scope| path.starts_with(scope)))
+            .collect();
+        if pinned.is_empty() {
+            return None;
+        }
+        let mut section = div()
+            .id("notes-pinned")
+            .debug_selector(|| "notes-pinned".into())
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .px_2()
+            .pt_2()
+            .child(
+                div()
+                    .px_2()
+                    .pb_1()
+                    .text_size(px(theme::font_micro()))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme::text_faint())
+                    .child("PINNED"),
+            );
+        for (index, path) in pinned.iter().enumerate() {
+            let title = path
+                .file_stem()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.to_string_lossy().to_string());
+            let selector = title.clone();
+            let open = path.clone();
+            let toggle = path.clone();
+            section = section.child(
+                div()
+                    .id(("pinned-item", index as u64))
+                    .debug_selector(move || format!("pinned-item-{}", selector))
+                    .a11y_button(format!("Open pinned note {title}"))
+                    .cursor_pointer()
+                    .rounded(px(6.))
+                    .h(px(theme::scaled(TREE_ROW_HEIGHT) - 4.))
+                    .px_2()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .hover(|row| row.bg(theme::raised()))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_note(open.clone(), window, cx);
+                    }))
+                    .child(icon(
+                        "icons/icon-star-filled.svg",
+                        px(theme::icon_tiny()),
+                        theme::text_muted(),
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(theme::font_row_meta()))
+                            .text_color(theme::text_dim())
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .id(("pinned-star", index as u64))
+                            .debug_selector(move || format!("pinned-star-{index}"))
+                            .a11y_button("Unpin note")
+                            .cursor_pointer()
+                            .rounded(px(4.))
+                            .p_0p5()
+                            .hover(|star| star.bg(theme::panel()))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.toggle_pin(&toggle, cx);
+                            }))
+                            .child(icon(
+                                "icons/icon-star.svg",
+                                px(theme::icon_tiny()),
+                                theme::text_faint(),
+                            )),
+                    ),
+            );
+        }
+        Some(section.into_any_element())
     }
 
     /// The search results, as the design's popup under the title bar field.
@@ -4294,5 +4812,20 @@ impl NotesPage {
             .on_scroll(|_, _, cx| cx.stop_propagation())
             .child(self.editor_element(cx))
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fuzzy_score;
+
+    #[test]
+    fn fuzzy_score_prefers_prefix_and_boundary_matches() {
+        let exact = fuzzy_score("note", "note.md").unwrap();
+        let mid = fuzzy_score("note", "denote.md").unwrap();
+        assert!(exact > mid, "a prefix outranks a mid-word hit");
+        assert!(fuzzy_score("pn", "projects/note.md").is_some());
+        assert!(fuzzy_score("NOTE", "projects/note.md").is_some());
+        assert!(fuzzy_score("zzz", "projects/note.md").is_none());
     }
 }

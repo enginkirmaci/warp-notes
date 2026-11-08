@@ -74,6 +74,17 @@ fn set_prompt(cx: &mut VisualTestContext, page: &gpui::Entity<NotesPage>, value:
     cx.run_until_parked();
 }
 
+fn set_palette(cx: &mut VisualTestContext, page: &gpui::Entity<NotesPage>, value: &str) {
+    let input = page.read_with(cx, |page, _| page.palette_input_handle().clone());
+    cx.update(|window, cx| {
+        input.update(cx, |field, cx| {
+            field.set_value(value.to_string(), window, cx)
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+}
+
 fn temp_home(prefix: &str) -> PathBuf {
     let home = std::env::temp_dir().join(format!("{prefix}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
@@ -1803,6 +1814,219 @@ fn f2_and_delete_operate_on_the_cursor(cx: &mut TestAppContext) {
         "Delete trashes the cursor note"
     );
     assert!(bounds(cx, "notes-toast-action").is_some());
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn quick_open_filters_and_opens_a_note(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-palette");
+    let alpha = home.join("notes/projects/alpha");
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    cx.simulate_keystrokes("ctrl-p");
+    assert!(
+        bounds(cx, "palette-card").is_some(),
+        "Ctrl+P opens quick open"
+    );
+    set_palette(cx, &page, "task");
+    click(cx, "palette-row-0");
+    page.read_with(cx, |page, _| {
+        assert_eq!(page.open_note_path(), Some(alpha.join("task.md")));
+    });
+    assert!(bounds(cx, "palette-card").is_none());
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn recent_order_survives_a_relaunch(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-recent");
+    let (handle, _page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    click(cx, "note-item-note.md");
+    click(cx, "note-item-task.md");
+    let prefs: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.join("settings.json")).unwrap())
+            .unwrap();
+    assert_eq!(prefs["recent"][0], "projects/alpha/task.md");
+    assert_eq!(prefs["recent"][1], "projects/alpha/note.md");
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn pinned_notes_render_and_unpin(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-pin");
+    let (handle, _page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    click(cx, "note-item-note.md");
+    click_str(cx, "note-actions-note.md");
+    click(cx, "notes-menu-pin");
+    assert!(
+        bounds(cx, "notes-pinned").is_some(),
+        "the pin section appears"
+    );
+    assert!(bounds(cx, "pinned-item-note").is_some());
+    let prefs: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.join("settings.json")).unwrap())
+            .unwrap();
+    assert_eq!(prefs["pinned"][0], "projects/alpha/note.md");
+
+    click_str(cx, "pinned-star-0");
+    assert!(
+        bounds(cx, "notes-pinned").is_none(),
+        "unpin removes the section"
+    );
+    let prefs: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.join("settings.json")).unwrap())
+            .unwrap();
+    assert_eq!(prefs["pinned"].as_array().map(Vec::len), Some(0));
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn quick_open_arrows_select_the_next_note(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-palette-arrows");
+    let alpha = home.join("notes/projects/alpha");
+    let (handle, _page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: None,
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    cx.simulate_keystrokes("ctrl-p down enter");
+    assert!(
+        bounds(cx, "palette-card").is_none(),
+        "Enter closes quick open"
+    );
+    let opened = cx.read_entity(&_page, |page, _| page.open_note_path());
+    assert_eq!(opened, Some(alpha.join("note.md")));
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn quick_open_drops_a_repo_pin_for_another_repo(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-palette-scope");
+    let beta = home.join("notes/projects/beta/beta.md");
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    cx.simulate_keystrokes("ctrl-p");
+    set_palette(cx, &page, "beta");
+    click(cx, "palette-row-0");
+    page.read_with(cx, |page, _| {
+        assert_eq!(page.open_note_path(), Some(beta.clone()));
+        assert_eq!(
+            page.notes_scope_for_probe(),
+            None,
+            "the repo pin is dropped"
+        );
+    });
+    assert!(
+        bounds(cx, "note-item-projects").is_some(),
+        "the tree reopened at the whole store"
+    );
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn quick_open_skips_the_hidden_app_folder(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-palette-hidden");
+    let notes = home.join("notes");
+    std::fs::create_dir_all(notes.join(".warp-notes")).unwrap();
+    std::fs::write(notes.join(".warp-notes/hidden.md"), "hidden").unwrap();
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(notes.clone()),
+            repo_scope: None,
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    cx.simulate_keystrokes("ctrl-p");
+    set_palette(cx, &page, "hidden");
+    assert!(
+        bounds(cx, "palette-row-0").is_none(),
+        "the hidden app folder never reaches quick open"
+    );
+    click(cx, "palette-scrim");
 
     let _ = std::fs::remove_dir_all(&home);
 }

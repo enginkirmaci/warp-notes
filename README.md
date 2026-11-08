@@ -25,6 +25,10 @@ from DevTools into its own repo. Rust/GPUI (gpui-kit 0.9), one crate.
   Enter opens, `F2` renames, `Delete` trashes and `Ctrl+D` duplicates. The
   title-bar search selects hits with Up/Down/Enter, and `Ctrl+/` opens the
   shortcut sheet.
+- `Ctrl+P` quick open searches every note in the store by title and path;
+  pinned and recent notes come first. The row menu pins/unpins, and a pinned
+  section sits above the tree. Opening a note from another repo drops the
+  current repo pin so the tree can show it.
 - A single live editor that works like Obsidian's live preview: markdown
   renders in place while typing with its syntax hidden until the caret touches
   it, checkboxes toggle on click, Enter continues lists, links and
