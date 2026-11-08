@@ -2,7 +2,7 @@
 
 Per-repo markdown notes with an Obsidian-style live editor — the Notes app
 of the [warp](https://github.com/enginkirmaci/warp-suite) family, extracted
-from DevTools into its own repo. Rust/GPUI (gpui-kit 0.7), one crate.
+from DevTools into its own repo. Rust/GPUI (gpui-kit 0.9), one crate.
 
 ## What it does
 
@@ -11,10 +11,13 @@ from DevTools into its own repo. Rust/GPUI (gpui-kit 0.7), one crate.
   older `~/.devtools/notes`) moves there on first run.
 - The family shell: a rail (Notes, Settings), the note tree in the list pane and
   one live editor in the detail pane; Settings holds the store path, the shared
-  text size, the Copper palette and reduce motion (the list width and
+  text size, the live palette and reduce motion (the list width and
   the motion choice persist in the versioned snake_case
   `~/.warp/notes/settings.json`).
 - Folder/file tree, capped full-text search, dirty-buffer-safe navigation.
+  A row's action menu (also on right-click) renames, moves, duplicates,
+  creates folders and copies store-relative paths; the tree and the open note
+  follow changes made outside the window on refresh or activation.
 - A single live editor that works like Obsidian's live preview: markdown
   renders in place while typing with its syntax hidden until the caret touches
   it, checkboxes toggle on click, Enter continues lists, links and
@@ -24,7 +27,8 @@ from DevTools into its own repo. Rust/GPUI (gpui-kit 0.7), one crate.
   The engine and the toolbar's pure markdown ops are shared with the family
   via [warpui-kit-markdown](../warpui-kit-markdown).
 - Clipboard image paste becomes `assets/paste-<stamp>.<ext>` next to the
-  note plus a relative markdown ref.
+  note plus a relative markdown ref. Moving a note leaves those relative
+  assets in the old folder; move the assets with it when that matters.
 
 ## Launch contract
 

@@ -6,7 +6,7 @@
 pub use warpui_kit_core::fonts::*;
 // the fixed semantic colors stay constants (they never follow the palette),
 // and the accent preset system rides along
-pub use warpui_kit_core::palette::{AccentColors, CHANGES, DANGER, current_ramp, tint};
+pub use warpui_kit_core::palette::{AccentColors, CHANGES, DANGER, SCRIM, current_ramp, tint};
 // the module itself names `palette::…` when it maps the kit theme
 use warpui_kit_core::palette;
 pub use warpui_kit_core::shell::scaled;
@@ -21,6 +21,12 @@ pub const TITLEBAR_H: f32 = warpui_kit_core::shell::TITLE_BAR_HEIGHT;
 /// `projects/`) made the pane wider than the window and pushed the head's
 /// controls past its edge.
 pub const NOTE_PATH_MAX_W: f32 = 260.;
+
+/// The tree's row-action menu.
+pub const MENU_WIDTH: f32 = 224.;
+
+/// The rename/move/new-folder prompt card.
+pub const PROMPT_WIDTH: f32 = 420.;
 
 // ---- gpui-kit theme mapping ------------------------------------------------
 

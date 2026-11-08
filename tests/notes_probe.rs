@@ -50,6 +50,30 @@ fn click(cx: &mut VisualTestContext, selector: &'static str) {
     cx.update(|window, cx| drop(window.draw(cx)));
 }
 
+fn click_str(cx: &mut VisualTestContext, selector: &str) {
+    let selector: &'static str = Box::leak(selector.to_string().into_boxed_str());
+    let b = cx
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} missing from the frame"));
+    let center = Point {
+        x: b.origin.x + b.size.width / 2.,
+        y: b.origin.y + b.size.height / 2.,
+    };
+    cx.simulate_click(center, Modifiers::default());
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+}
+
+fn set_prompt(cx: &mut VisualTestContext, page: &gpui::Entity<NotesPage>, value: &str) {
+    let input = page.read_with(cx, |page, _| page.prompt_input_handle().clone());
+    cx.update(|window, cx| {
+        input.update(cx, |field, cx| {
+            field.set_value(value.to_string(), window, cx)
+        });
+    });
+    cx.run_until_parked();
+}
+
 fn temp_home(prefix: &str) -> PathBuf {
     let home = std::env::temp_dir().join(format!("{prefix}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
@@ -1277,6 +1301,172 @@ fn refresh_reloads_a_clean_open_note_and_conflicts_a_dirty_one(cx: &mut TestAppC
     page.read_with(cx, |page, cx| {
         assert!(page.editor_value(cx).contains("typed locally"));
     });
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn rename_updates_disk_editor_and_prefs(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-rename");
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    click(cx, "note-item-note.md");
+    click_str(cx, "note-actions-note.md");
+    click(cx, "notes-menu-rename");
+    set_prompt(cx, &page, "renamed");
+    click(cx, "notes-prompt-confirm");
+
+    let alpha = home.join("notes/projects/alpha");
+    assert!(!alpha.join("note.md").exists(), "the old name is gone");
+    assert_eq!(
+        std::fs::read_to_string(alpha.join("renamed.md")).unwrap(),
+        "# Note\n\nHello **world**.\n"
+    );
+    page.read_with(cx, |page, _| {
+        assert_eq!(page.open_note_path(), Some(alpha.join("renamed.md")));
+    });
+    assert_eq!(
+        cx.window_title().as_deref(),
+        Some("renamed.md — Warp Notes"),
+        "the title follows the renamed note"
+    );
+    let prefs: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.join("settings.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        prefs["open_note"], "projects/alpha/renamed.md",
+        "the remembered note follows the rename"
+    );
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn move_note_updates_the_open_path(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-move");
+    let alpha = home.join("notes/projects/alpha");
+    std::fs::create_dir_all(alpha.join("archive")).unwrap();
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    click(cx, "note-item-note.md");
+    click_str(cx, "note-actions-note.md");
+    click(cx, "notes-menu-move");
+    set_prompt(cx, &page, "archive");
+    click(cx, "notes-prompt-confirm");
+
+    assert!(!alpha.join("note.md").exists());
+    assert_eq!(
+        std::fs::read_to_string(alpha.join("archive/note.md")).unwrap(),
+        "# Note\n\nHello **world**.\n"
+    );
+    page.read_with(cx, |page, _| {
+        assert_eq!(page.open_note_path(), Some(alpha.join("archive/note.md")));
+    });
+    assert_eq!(cx.window_title().as_deref(), Some("note.md — Warp Notes"));
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn duplicate_opens_a_unique_copy_and_new_folder_expands(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-copy-folder");
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    click(cx, "note-item-note.md");
+    click_str(cx, "note-actions-note.md");
+    click(cx, "notes-menu-duplicate");
+    let alpha = home.join("notes/projects/alpha");
+    assert_eq!(
+        std::fs::read_to_string(alpha.join("note copy.md")).unwrap(),
+        "# Note\n\nHello **world**.\n"
+    );
+    page.read_with(cx, |page, _| {
+        assert_eq!(page.open_note_path(), Some(alpha.join("note copy.md")));
+    });
+
+    click_str(cx, "note-actions-note.md");
+    click(cx, "notes-menu-new-folder");
+    set_prompt(cx, &page, "ideas");
+    click(cx, "notes-prompt-confirm");
+    assert!(alpha.join("ideas").is_dir());
+    assert!(
+        bounds(cx, "note-item-ideas").is_some(),
+        "the new folder is visible under the open repo"
+    );
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn copy_path_writes_the_store_relative_path(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-copy-path");
+    let (handle, _page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    click(cx, "note-item-note.md");
+    click_str(cx, "note-actions-note.md");
+    click(cx, "notes-menu-copy-path");
+    let item = cx.update(|_, cx| cx.read_from_clipboard()).unwrap();
+    let text = item.entries.iter().find_map(|entry| match entry {
+        gpui::ClipboardEntry::String(text) => Some(text.text.clone()),
+        _ => None,
+    });
+    assert_eq!(text.as_deref(), Some("projects/alpha/note.md"));
 
     let _ = std::fs::remove_dir_all(&home);
 }

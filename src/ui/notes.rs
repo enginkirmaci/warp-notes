@@ -107,6 +107,45 @@ struct TextStats {
     lines: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PromptKind {
+    Rename,
+    NewFolder,
+    MoveTo,
+}
+
+impl PromptKind {
+    fn title(self) -> &'static str {
+        match self {
+            PromptKind::Rename => "Rename",
+            PromptKind::NewFolder => "New folder",
+            PromptKind::MoveTo => "Move to folder",
+        }
+    }
+
+    fn confirm(self) -> &'static str {
+        match self {
+            PromptKind::Rename => "Rename",
+            PromptKind::NewFolder => "Create folder",
+            PromptKind::MoveTo => "Move",
+        }
+    }
+}
+
+#[derive(Clone)]
+struct PromptState {
+    kind: PromptKind,
+    target: PathBuf,
+}
+
+#[derive(Clone)]
+struct RowMenu {
+    path: PathBuf,
+    is_folder: bool,
+    x: f32,
+    y: f32,
+}
+
 pub struct NotesPage {
     /// The notes store root: --store when given, else ~/notes.
     pub(crate) store_root: PathBuf,
@@ -186,6 +225,11 @@ pub struct NotesPage {
     create_open: bool,
     create_name: Entity<InputState>,
     create_folder: Entity<InputState>,
+    /// The rename / new-folder / move prompt's field and target.
+    prompt: Option<PromptState>,
+    prompt_input: Entity<InputState>,
+    /// The row action menu, anchored where the pointer opened it.
+    row_menu: Option<RowMenu>,
     /// The transient toast: save/create/delete outcomes, bottom right.
     notice: Option<Notice>,
     /// The next toast's sequence number.
@@ -216,6 +260,7 @@ impl NotesPage {
         let create_name = cx.new(|cx| InputState::new(window, cx).placeholder("New note name"));
         let create_folder =
             cx.new(|cx| InputState::new(window, cx).placeholder("Folder (optional)"));
+        let prompt_input = cx.new(|cx| InputState::new(window, cx).placeholder("Name"));
         cx.subscribe(&search, |this, field, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 this.run_search(field.read(cx).value().to_string(), cx);
@@ -317,6 +362,9 @@ impl NotesPage {
             create_open: false,
             create_name,
             create_folder,
+            prompt: None,
+            prompt_input,
+            row_menu: None,
             notice: None,
             notice_seq: 0,
             titlebar_should_move: false,
@@ -1038,6 +1086,247 @@ impl NotesPage {
         cx.notify();
     }
 
+    fn open_row_menu(
+        &mut self,
+        path: PathBuf,
+        is_folder: bool,
+        at: gpui::Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.row_menu = Some(RowMenu {
+            path,
+            is_folder,
+            x: at.x.as_f32(),
+            y: at.y.as_f32(),
+        });
+        self.prompt = None;
+        cx.notify();
+    }
+
+    fn open_tree_entry(
+        &mut self,
+        path: PathBuf,
+        is_folder: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.row_menu = None;
+        if is_folder {
+            if self.expanded.contains(&path) {
+                self.expanded.remove(&path);
+            } else {
+                self.expanded.insert(path);
+            }
+            self.remember_expanded();
+            cx.notify();
+        } else {
+            self.open_note(path, window, cx);
+        }
+    }
+
+    fn start_prompt(
+        &mut self,
+        kind: PromptKind,
+        target: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(scope) = self.notes_root() else {
+            return;
+        };
+        let prefill = match kind {
+            PromptKind::Rename => {
+                if target.is_dir() {
+                    target
+                        .file_name()
+                        .map(|name| name.to_string_lossy().to_string())
+                        .unwrap_or_default()
+                } else {
+                    target
+                        .file_stem()
+                        .map(|name| name.to_string_lossy().to_string())
+                        .unwrap_or_default()
+                }
+            }
+            PromptKind::NewFolder => String::new(),
+            PromptKind::MoveTo => target
+                .parent()
+                .and_then(|parent| parent.strip_prefix(&scope).ok())
+                .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default(),
+        };
+        self.prompt_input.update(cx, |field, cx| {
+            field.set_value(prefill, window, cx);
+            field.focus(window, cx);
+        });
+        self.prompt = Some(PromptState { kind, target });
+        self.row_menu = None;
+        cx.notify();
+    }
+
+    fn confirm_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(prompt) = self.prompt.clone() else {
+            return;
+        };
+        let Some(scope) = self.notes_root() else {
+            return;
+        };
+        let value = self.prompt_input.read(cx).value().trim().to_string();
+        let outcome = match prompt.kind {
+            PromptKind::Rename => {
+                notes_core::rename_entry(&scope, &prompt.target, &value).map(|new| (new, None))
+            }
+            PromptKind::NewFolder => {
+                let parent = if prompt.target.is_dir() {
+                    prompt.target.clone()
+                } else {
+                    prompt
+                        .target
+                        .parent()
+                        .map(Path::to_path_buf)
+                        .unwrap_or_else(|| scope.clone())
+                };
+                notes_core::create_folder(&scope, &parent, &value).map(|new| (new, Some(parent)))
+            }
+            PromptKind::MoveTo => {
+                let parent = match resolve_folder(&scope, &value) {
+                    Ok(parent) => parent,
+                    Err(err) => {
+                        self.notice(cx, NoticeKind::Error, &err.to_string());
+                        return;
+                    }
+                };
+                notes_core::move_entry(&scope, &prompt.target, &parent).map(|new| (new, None))
+            }
+        };
+        match outcome {
+            Ok((new_path, new_parent)) => {
+                self.prompt = None;
+                if prompt.kind == PromptKind::NewFolder {
+                    if let Some(parent) = new_parent {
+                        self.expanded.insert(parent);
+                        self.remember_expanded();
+                    }
+                    self.refresh_tree(&scope);
+                } else {
+                    self.after_path_change(&prompt.target, &new_path, window, cx);
+                    if prompt.kind == PromptKind::Rename {
+                        self.refresh_tree(&scope);
+                    }
+                }
+                self.notice(
+                    cx,
+                    NoticeKind::Info,
+                    match prompt.kind {
+                        PromptKind::Rename => "note renamed",
+                        PromptKind::NewFolder => "folder created",
+                        PromptKind::MoveTo => "note moved",
+                    },
+                );
+            }
+            Err(err) => self.notice(cx, NoticeKind::Error, &err.to_string()),
+        }
+        cx.notify();
+    }
+
+    fn after_path_change(
+        &mut self,
+        old: &Path,
+        new: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(open) = self.open_note.clone()
+            && let Ok(relative) = open.strip_prefix(old)
+        {
+            let updated = new.join(relative);
+            self.open_note = Some(updated.clone());
+            self.saved_meta = notes_core::note_meta(&updated);
+            self.prefs.open_note = Some(store_relative(&self.store_root, &updated));
+            self.editor.update(cx, |state, cx| {
+                state.set_base_dir(updated.parent().map(Path::to_path_buf), cx);
+            });
+            self.set_note_window_title(window);
+        }
+        self.dirty = self
+            .dirty
+            .drain()
+            .map(|(path, text)| (rewrite_path(&path, old, new), text))
+            .collect();
+        self.conflicts = self
+            .conflicts
+            .drain()
+            .map(|path| rewrite_path(&path, old, new))
+            .collect();
+        self.expanded = self
+            .expanded
+            .drain()
+            .map(|path| rewrite_path(&path, old, new))
+            .collect();
+        self.remember_expanded();
+        self.age_cache = None;
+        self.note_names_stale = true;
+        if let Some(scope) = self.notes_root() {
+            self.refresh_tree(&scope);
+        }
+        cx.notify();
+    }
+
+    fn duplicate_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if self.open_note.as_ref() == Some(&path) && self.is_dirty(cx) {
+            self.save_current(cx);
+            if self.conflict {
+                self.notice(cx, NoticeKind::Error, "fix the conflict before duplicating");
+                return;
+            }
+        }
+        let Some(scope) = self.notes_root() else {
+            return;
+        };
+        match notes_core::duplicate_note(&scope, &path) {
+            Ok(new_path) => {
+                if let Some(parent) = new_path.parent() {
+                    self.expanded.insert(parent.to_path_buf());
+                    self.remember_expanded();
+                }
+                self.refresh_tree(&scope);
+                self.open_note(new_path, window, cx);
+                self.notice(cx, NoticeKind::Info, "note duplicated");
+            }
+            Err(err) => self.notice(cx, NoticeKind::Error, &err.to_string()),
+        }
+    }
+
+    fn copy_entry_path(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let relative = store_relative(&self.store_root, path);
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(relative.clone()));
+        self.notice(cx, NoticeKind::Info, &format!("copied {relative}"));
+    }
+
+    fn new_note_here(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(scope) = self.notes_root() else {
+            return;
+        };
+        let folder = if path.is_dir() {
+            path
+        } else {
+            path.parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| scope.clone())
+        };
+        let relative = folder
+            .strip_prefix(&scope)
+            .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        self.create_open = true;
+        self.create_folder
+            .update(cx, |field, cx| field.set_value(relative, window, cx));
+        self.create_name
+            .update(cx, |field, cx| field.focus(window, cx));
+        self.row_menu = None;
+        cx.notify();
+    }
+
     fn apply_format(&mut self, format: &str, window: &mut Window, cx: &mut Context<Self>) {
         // the kit editor owns the selection: read it, apply over the exact
         // range, and restore the op's returned selection
@@ -1169,6 +1458,18 @@ impl NotesPage {
     pub fn editor_handle(&self) -> &Entity<LiveEditorState> {
         &self.editor
     }
+
+    /// The prompt's field — for headless probes (rename/move/new-folder).
+    #[doc(hidden)]
+    pub fn prompt_input_handle(&self) -> &Entity<InputState> {
+        &self.prompt_input
+    }
+
+    /// The path the editor is showing — for headless probes.
+    #[doc(hidden)]
+    pub fn open_note_path(&self) -> Option<PathBuf> {
+        self.open_note.clone()
+    }
 }
 
 fn byte_to_char(text: &str, byte: usize) -> usize {
@@ -1266,6 +1567,63 @@ fn compact_path(store_root: &Path, path: &Path) -> String {
     } else {
         folder.display().to_string()
     }
+}
+
+fn store_relative(store_root: &Path, path: &Path) -> String {
+    path.strip_prefix(store_root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn rewrite_path(path: &Path, old: &Path, new: &Path) -> PathBuf {
+    if path == old {
+        return new.to_path_buf();
+    }
+    match path.strip_prefix(old) {
+        Ok(relative) => new.join(relative),
+        Err(_) => path.to_path_buf(),
+    }
+}
+
+fn resolve_folder(scope: &Path, value: &str) -> anyhow::Result<PathBuf> {
+    let mut target = scope.to_path_buf();
+    if !value.trim().is_empty() {
+        for segment in value.trim().split(['/', '\\']) {
+            if segment.is_empty() {
+                continue;
+            }
+            let name = notes_core::sanitize_entry_name(segment, false)
+                .ok_or_else(|| anyhow::anyhow!("folder name is not usable"))?;
+            target.push(name);
+        }
+    }
+    if !target.is_dir() {
+        anyhow::bail!("folder does not exist");
+    }
+    Ok(target)
+}
+
+fn menu_item(
+    id: &'static str,
+    label: impl Into<SharedString>,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> gpui::AnyElement {
+    let label: SharedString = label.into();
+    div()
+        .id(id)
+        .debug_selector(move || id.into())
+        .a11y_button(label.clone())
+        .cursor_pointer()
+        .rounded(px(6.))
+        .px_2()
+        .py_1p5()
+        .text_size(px(theme::font_body()))
+        .text_color(theme::text_dim())
+        .hover(|style| style.bg(theme::raised()).text_color(theme::text()))
+        .on_click(on_click)
+        .child(label)
+        .into_any_element()
 }
 
 /// The note's age for the head's right side: now, 5m, 2h, 3d.
@@ -1408,6 +1766,12 @@ impl Render for NotesPage {
         }
         if let Some(toasts) = self.render_toasts(cx) {
             root = root.child(toasts);
+        }
+        if let Some(menu) = self.row_menu.clone() {
+            root = root.child(self.render_row_menu(window, cx, menu));
+        }
+        if let Some(prompt) = self.prompt.clone() {
+            root = root.child(self.render_prompt(window, cx, prompt));
         }
         root
     }
@@ -1688,6 +2052,269 @@ impl NotesPage {
             )
             .into_any_element(),
         )
+    }
+
+    fn render_row_menu(
+        &mut self,
+        window: &Window,
+        cx: &mut Context<Self>,
+        menu: RowMenu,
+    ) -> gpui::AnyElement {
+        let max_x = (window.viewport_size().width.as_f32() - theme::MENU_WIDTH - 8.).max(8.);
+        let max_y = (window.viewport_size().height.as_f32() - 320.).max(8.);
+        let x = menu.x.clamp(8., max_x);
+        let y = menu.y.clamp(8., max_y);
+        let path = menu.path.clone();
+        let is_folder = menu.is_folder;
+        let card = div()
+            .id("notes-row-menu")
+            .debug_selector(|| "notes-row-menu".into())
+            .absolute()
+            .left(px(x))
+            .top(px(y))
+            .w(px(theme::MENU_WIDTH))
+            .occlude()
+            .rounded(px(8.))
+            .border_1()
+            .border_color(theme::line_strong())
+            .bg(theme::overlay())
+            .shadow_lg()
+            .p_1()
+            .flex()
+            .flex_col()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(menu_item(
+                "notes-menu-open",
+                "Open",
+                cx.listener({
+                    let path = path.clone();
+                    move |this, _, window, cx| {
+                        this.open_tree_entry(path.clone(), is_folder, window, cx);
+                    }
+                }),
+            ))
+            .child(menu_item(
+                "notes-menu-rename",
+                "Rename…",
+                cx.listener({
+                    let path = path.clone();
+                    move |this, _, window, cx| {
+                        this.row_menu = None;
+                        this.start_prompt(PromptKind::Rename, path.clone(), window, cx);
+                    }
+                }),
+            ))
+            .when(!is_folder, |card| {
+                card.child(menu_item(
+                    "notes-menu-duplicate",
+                    "Duplicate",
+                    cx.listener({
+                        let path = path.clone();
+                        move |this, _, window, cx| {
+                            this.row_menu = None;
+                            this.duplicate_path(path.clone(), window, cx);
+                        }
+                    }),
+                ))
+            })
+            .child(menu_item(
+                "notes-menu-move",
+                "Move to folder…",
+                cx.listener({
+                    let path = path.clone();
+                    move |this, _, window, cx| {
+                        this.row_menu = None;
+                        this.start_prompt(PromptKind::MoveTo, path.clone(), window, cx);
+                    }
+                }),
+            ))
+            .child(menu_item(
+                "notes-menu-new-note",
+                "New note here",
+                cx.listener({
+                    let path = path.clone();
+                    move |this, _, window, cx| {
+                        this.row_menu = None;
+                        this.new_note_here(path.clone(), window, cx);
+                    }
+                }),
+            ))
+            .child(menu_item(
+                "notes-menu-new-folder",
+                "New folder…",
+                cx.listener({
+                    let path = path.clone();
+                    move |this, _, window, cx| {
+                        this.row_menu = None;
+                        let target = if is_folder {
+                            path.clone()
+                        } else {
+                            path.parent().map(Path::to_path_buf).unwrap_or(path.clone())
+                        };
+                        this.start_prompt(PromptKind::NewFolder, target, window, cx);
+                    }
+                }),
+            ))
+            .child(div().h(px(1.)).my_1().bg(theme::hairline()))
+            .child(menu_item(
+                "notes-menu-copy-path",
+                "Copy path",
+                cx.listener({
+                    let path = path.clone();
+                    move |this, _, _, cx| {
+                        this.row_menu = None;
+                        this.copy_entry_path(&path, cx);
+                    }
+                }),
+            ));
+        div()
+            .id("notes-row-menu-scrim")
+            .absolute()
+            .inset_0()
+            .occlude()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.row_menu = None;
+                    cx.notify();
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, _, _, cx| {
+                    this.row_menu = None;
+                    cx.notify();
+                }),
+            )
+            .child(card)
+            .into_any_element()
+    }
+
+    fn render_prompt(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        prompt: PromptState,
+    ) -> gpui::AnyElement {
+        let kind = prompt.kind;
+        let hint = match kind {
+            PromptKind::Rename => "The name becomes the file name. Notes keep their .md extension.",
+            PromptKind::NewFolder => "The folder is created under the selected folder.",
+            PromptKind::MoveTo => "The folder path is relative to the current tree scope.",
+        };
+        let card = div()
+            .id("notes-prompt-card")
+            .debug_selector(|| "notes-prompt-card".into())
+            .role(gpui::Role::Dialog)
+            .occlude()
+            .w(px(theme::PROMPT_WIDTH))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(theme::line_strong())
+            .bg(theme::panel())
+            .shadow_lg()
+            .p_4()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key == "enter" {
+                    this.confirm_prompt(window, cx);
+                    cx.stop_propagation();
+                } else if event.keystroke.key == "escape" {
+                    this.prompt = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                }
+            }))
+            .child(
+                div()
+                    .text_size(px(theme::font_screen_title()))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme::text())
+                    .child(kind.title()),
+            )
+            .child(
+                div()
+                    .text_size(px(theme::font_meta()))
+                    .text_color(theme::text_muted())
+                    .child(hint),
+            )
+            .child(warpui_kit_core::field::text(
+                "notes-prompt-input",
+                &self.prompt_input,
+                window,
+                cx,
+            ))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_2()
+                    .pt_1()
+                    .child(
+                        div()
+                            .id("notes-prompt-cancel")
+                            .debug_selector(|| "notes-prompt-cancel".into())
+                            .a11y_button("Cancel")
+                            .cursor_pointer()
+                            .rounded(px(6.))
+                            .h(px(theme::scaled(shell::CONTROL_HEIGHT) - 8.))
+                            .px_3()
+                            .flex()
+                            .items_center()
+                            .text_size(px(theme::font_control()))
+                            .text_color(theme::text_muted())
+                            .hover(|style| style.bg(theme::raised()))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.prompt = None;
+                                cx.notify();
+                            }))
+                            .child("Cancel"),
+                    )
+                    .child(
+                        div()
+                            .id("notes-prompt-confirm")
+                            .debug_selector(|| "notes-prompt-confirm".into())
+                            .a11y_button(kind.confirm())
+                            .cursor_pointer()
+                            .rounded(px(6.))
+                            .h(px(theme::scaled(shell::CONTROL_HEIGHT) - 8.))
+                            .px_3()
+                            .flex()
+                            .items_center()
+                            .bg(theme::accent())
+                            .text_color(theme::on_accent())
+                            .text_size(px(theme::font_control()))
+                            .font_weight(FontWeight::MEDIUM)
+                            .hover(|style| style.opacity(0.9))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.confirm_prompt(window, cx);
+                            }))
+                            .child(kind.confirm()),
+                    ),
+            );
+        div()
+            .id("notes-prompt-scrim")
+            .absolute()
+            .inset_0()
+            .occlude()
+            .bg(theme::SCRIM)
+            .flex()
+            .items_center()
+            .justify_center()
+            .p_4()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.prompt = None;
+                    cx.notify();
+                }),
+            )
+            .child(card)
+            .into_any_element()
     }
 }
 impl NotesPage {
@@ -2459,6 +3086,7 @@ impl NotesPage {
             index as u64,
         );
         let selector_name = item.name.clone();
+        let action_selector = format!("note-actions-{}", item.name);
         div()
             .id(id)
             .debug_selector(move || format!("note-item-{}", selector_name))
@@ -2484,6 +3112,14 @@ impl NotesPage {
             })
             .when(!selected, |d| d.text_color(theme::text_dim()))
             .when(!selected, |d| d.hover(|s| s.bg(theme::panel())))
+            .on_mouse_down(MouseButton::Right, {
+                let path = item.full_path.clone();
+                let is_folder = item.is_folder;
+                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                    this.open_row_menu(path.clone(), is_folder, event.position, cx);
+                    cx.stop_propagation();
+                })
+            })
             .on_click({
                 let item = item.clone();
                 cx.listener(move |this, _, window, cx| {
@@ -2544,6 +3180,32 @@ impl NotesPage {
                         .bg(theme::CHANGES),
                 )
             })
+            .child(
+                div()
+                    .id(("note-actions", index as u64))
+                    .debug_selector(move || action_selector.clone())
+                    .a11y_button("Note actions")
+                    .cursor_pointer()
+                    .flex_shrink_0()
+                    .ml_1()
+                    .rounded(px(6.))
+                    .p_0p5()
+                    .opacity(0.6)
+                    .hover(|style| style.bg(theme::raised()).opacity(1.))
+                    .on_mouse_down(MouseButton::Left, {
+                        let path = item.full_path.clone();
+                        let is_folder = item.is_folder;
+                        cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                            this.open_row_menu(path.clone(), is_folder, event.position, cx);
+                            cx.stop_propagation();
+                        })
+                    })
+                    .child(icon(
+                        "icons/icon-more.svg",
+                        px(theme::icon_small() - 2.),
+                        theme::text_faint(),
+                    )),
+            )
             .into_any_element()
     }
 
