@@ -93,6 +93,7 @@ fn repo_scope_up_button_tree_and_live_editor(cx: &mut TestAppContext) {
             store_root: Some(home.join("notes")),
             repo_scope: Some("alpha".into()),
             open_note: None,
+            whole_store: false,
         },
     );
     let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
@@ -314,6 +315,7 @@ fn opening_a_note_puts_the_keyboard_in_the_editor(cx: &mut TestAppContext) {
             store_root: Some(home.join("notes")),
             repo_scope: Some("alpha".into()),
             open_note: None,
+            whole_store: false,
         },
     );
     let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
@@ -350,6 +352,7 @@ fn following_a_wikilink_opens_or_creates_the_note(cx: &mut TestAppContext) {
             store_root: Some(home.join("notes")),
             repo_scope: Some("alpha".into()),
             open_note: Some(PathBuf::from("alpha/links.md")),
+            whole_store: false,
         },
     );
     let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
@@ -432,6 +435,7 @@ fn note_arg_opens_the_requested_note(cx: &mut TestAppContext) {
             store_root: Some(home.join("notes")),
             repo_scope: None,
             open_note: Some(PathBuf::from("beta/beta.md")),
+            whole_store: false,
         },
     );
     let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
@@ -458,6 +462,57 @@ fn note_arg_opens_the_requested_note(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+/// The titlebar's launch shape: `--root` opens the whole store even when the
+/// prefs remember a repo pin, and drops that pin for the next bare launch.
+#[gpui::test]
+fn root_launch_overrides_a_remembered_repo_scope(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+
+    let home = temp_home("warpnotes-probe-root");
+    let prefs_path = home.join("settings.json");
+    std::fs::write(
+        &prefs_path,
+        r#"{"schema_version": 1, "notes_scope": "alpha"}"#,
+    )
+    .unwrap();
+    let (handle, _page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: None,
+            open_note: None,
+            whole_store: true,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    // both repo folders are siblings at the root, and nothing is pinned
+    assert!(
+        bounds(cx, "note-item-alpha").is_some(),
+        "--root shows every repo folder",
+    );
+    assert!(
+        bounds(cx, "note-item-beta").is_some(),
+        "--root shows every repo folder",
+    );
+    assert!(
+        bounds(cx, "notes-up-dir").is_none(),
+        "the root has no scope chip or up button",
+    );
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&prefs_path).unwrap()).unwrap();
+    assert!(
+        saved["notes_scope"].is_null(),
+        "the remembered pin is dropped: {saved}",
+    );
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 /// With `--repo` pinned, a relative `--note` is read inside that repo's
 /// folder: `--repo alpha --note note.md` opens `alpha/note.md` (the smoke
 /// test's launch shape, which used to land on "No note open").
@@ -473,6 +528,7 @@ fn a_relative_note_opens_inside_the_pinned_repo(cx: &mut TestAppContext) {
             store_root: Some(home.join("notes")),
             repo_scope: Some("alpha".into()),
             open_note: Some(PathBuf::from("note.md")),
+            whole_store: false,
         },
     );
     let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
@@ -522,6 +578,7 @@ fn paste_probe(tcx: &mut TestAppContext, prefix: &str) -> PasteProbe {
             store_root: Some(home.join("notes")),
             repo_scope: Some("alpha".into()),
             open_note: None,
+            whole_store: false,
         },
     );
     let cx = VisualTestContext::from_window(handle.into(), tcx).into_mut();
@@ -684,6 +741,7 @@ fn ctrl_f_opens_find_and_selects_the_first_match(cx: &mut TestAppContext) {
             store_root: Some(home.join("notes")),
             repo_scope: None,
             open_note: Some(home.join("notes/alpha/note.md")),
+            whole_store: false,
         },
     );
     let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
@@ -745,6 +803,7 @@ fn a_large_store_lays_out_only_the_visible_rows(cx: &mut TestAppContext) {
             store_root: Some(home.join("notes")),
             repo_scope: Some("alpha".into()),
             open_note: None,
+            whole_store: false,
         },
     );
     let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
@@ -807,6 +866,7 @@ fn search_sits_in_the_titlebar_and_caps_its_popup(cx: &mut TestAppContext) {
             store_root: Some(home.join("notes")),
             repo_scope: Some("alpha".into()),
             open_note: None,
+            whole_store: false,
         },
     );
     let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
@@ -905,6 +965,7 @@ fn status_counts_are_cached_until_the_text_changes(cx: &mut TestAppContext) {
             store_root: Some(home.join("notes")),
             repo_scope: Some("alpha".into()),
             open_note: None,
+            whole_store: false,
         },
     );
     let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
@@ -952,6 +1013,7 @@ fn edits_autosave_after_the_debounce(cx: &mut TestAppContext) {
             store_root: Some(home.join("notes")),
             repo_scope: Some("alpha".into()),
             open_note: None,
+            whole_store: false,
         },
     );
     let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
@@ -1007,6 +1069,7 @@ fn an_external_edit_becomes_a_conflict_not_a_silent_overwrite(cx: &mut TestAppCo
             store_root: Some(home.join("notes")),
             repo_scope: Some("alpha".into()),
             open_note: Some(note.clone()),
+            whole_store: false,
         },
     );
     let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
@@ -1096,6 +1159,7 @@ fn a_relaunch_restores_the_arranged_ui(cx: &mut TestAppContext) {
         store_root: Some(home.join("notes")),
         repo_scope: Some("alpha".into()),
         open_note: None,
+        whole_store: false,
     };
 
     // arrange: up to the whole store, expand alpha, open a note, hide the
@@ -1119,6 +1183,7 @@ fn a_relaunch_restores_the_arranged_ui(cx: &mut TestAppContext) {
             store_root: launch.store_root.clone(),
             repo_scope: None,
             open_note: None,
+            whole_store: false,
         },
     );
     let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();

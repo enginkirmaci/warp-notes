@@ -28,13 +28,16 @@ from DevTools into its own repo. Rust/GPUI (gpui-kit 0.7), one crate.
 ## Launch contract
 
 ```
-warp-notes [--store <path>] [--repo <name>] [--note <path>]
+warp-notes [--store <path>] [--repo <name>] [--root] [--note <path>]
 ```
 
-- `--store` — the notes store root; default `~/notes`. DevTools passes
+- `--store` — the notes store root; default `~/notes`. Warp Station passes
   its resolved `notes_store_path` setting.
 - `--repo` — pin the tree to one repository's notes folder (the titlebar's
   up button climbs back to the whole store).
+- `--root` — open the whole store outright, beating a `--repo` pin and the
+  scope the last window remembered. Warp Station's titlebar sends it, so the
+  notes root opens whatever repository is selected there.
 - `--note` — open that note right away (absolute, or store-relative).
 
 Multi-instance is free: every launch opens its own window.

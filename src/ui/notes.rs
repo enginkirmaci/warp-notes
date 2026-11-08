@@ -43,14 +43,18 @@ enum Section {
     Settings,
 }
 
-/// The launch configuration the CLI parsed: the store root (DevTools passes
-/// the resolved `notes_store_path`; standalone defaults to ~/notes),
-/// an optional pinned repo scope and an optional note to open right away.
+/// The launch configuration the CLI parsed: the store root (Warp Station
+/// passes the resolved `notes_store_path`; standalone defaults to ~/notes),
+/// an optional pinned repo scope, an optional note to open right away, and
+/// whether the launch asked for the whole store outright (`--root`).
 #[derive(Clone, Debug, Default)]
 pub struct Launch {
     pub store_root: Option<PathBuf>,
     pub repo_scope: Option<String>,
     pub open_note: Option<PathBuf>,
+    /// Open the whole store, overriding both a `--repo` pin and the scope the
+    /// last window remembered. Warp Station's titlebar sends this.
+    pub whole_store: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -233,7 +237,13 @@ impl NotesPage {
         cx.observe(&editor, |_, _, cx| cx.notify()).detach();
         // the remembered bits: the layout, and the motion choice (applied
         // before the first frame so nothing animates that should not)
-        let prefs = UiPrefs::load();
+        let mut prefs = UiPrefs::load();
+        // --root asks for the whole store outright: it beats a --repo pin and
+        // the remembered one, and dropping the pin keeps the next bare launch
+        // at the root too
+        if launch.whole_store && prefs.notes_scope.take().is_some() {
+            prefs.save();
+        }
         // the setting or the desktop's own preference, whichever asks first
         motion::set_reduced(prefs.reduce_motion || motion::system_prefers_reduced());
         // E2E hook: WARP_NOTES_PAGE=settings opens the rail's Settings section
@@ -251,11 +261,16 @@ impl NotesPage {
             "appearance" => SettingsSection::Appearance,
             _ => SettingsSection::General,
         };
-        // a --repo pin wins over the scope the last session reached; the
-        // tree reopens the folders it had, still under this store root
-        let notes_scope = match notes_scope {
-            Some(repo) => Some(repo),
-            None => prefs.notes_scope.clone(),
+        // a --root launch opens the whole store; otherwise a --repo pin wins
+        // over the scope the last session reached, and the tree reopens the
+        // folders it had, still under this store root
+        let notes_scope = if launch.whole_store {
+            None
+        } else {
+            match notes_scope {
+                Some(repo) => Some(repo),
+                None => prefs.notes_scope.clone(),
+            }
         };
         let expanded = prefs
             .expanded

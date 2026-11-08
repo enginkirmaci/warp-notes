@@ -14,9 +14,10 @@ use gpui_platform::application;
 use std::path::PathBuf;
 
 /// The launch contract: `warp-notes [--store <path>] [--repo <name>]
-/// [--note <path>]`. DevTools passes all three; a bare launch roots at
-/// ~/notes with nothing pinned. Unknown args are ignored so a stale
-/// desktop shortcut never blocks the window.
+/// [--root] [--note <path>]`. Warp Station's titlebar passes `--root` (the
+/// whole store); its repo launchers pass `--repo`. A bare launch roots at
+/// ~/notes with nothing pinned. Unknown args are ignored so a stale desktop
+/// shortcut never blocks the window.
 fn parse_launch() -> Launch {
     let mut launch = Launch::default();
     // args_os: non-UTF-8 argv must degrade to an ignored arg, not panic
@@ -33,6 +34,7 @@ fn parse_launch() -> Launch {
                 launch.store_root = value().map(|v| warp_notes::notes_store::resolve_store_root(&v))
             }
             "--repo" => launch.repo_scope = value(),
+            "--root" => launch.whole_store = true,
             "--note" => launch.open_note = value().map(PathBuf::from),
             _ => {}
         }

@@ -26,12 +26,15 @@ the modules and the binary is a thin bootstrap. The probes build the real
 ## Launch contract
 
 ```text
-warp-notes [--store <path>] [--repo <name>] [--note <path>]
+warp-notes [--store <path>] [--repo <name>] [--root] [--note <path>]
 ```
 
 - `--store` — the notes store root; default `~/notes`.
 - `--repo` — pin the tree to one repository's notes folder; the titlebar's up
   button climbs back to the whole store.
+- `--root` — open the whole store outright, beating both `--repo` and the
+  scope the last window remembered (Warp Station's titlebar sends it, so the
+  notes root opens whatever repo is selected there).
 - `--note` — open that note right away (absolute or store-relative).
 - Unknown args are ignored so a stale desktop shortcut never blocks the
   window.
@@ -62,7 +65,7 @@ cargo build -p warp-notes
 
 - `tests/notes_probe.rs` covers the real window: tree, opening a note, the
   live editor, task checkboxes, list continuation, wikilinks, and the
-  `--repo`/`--note` launch contract.
+  `--repo`/`--root`/`--note` launch contract.
 - `tests/layout_migration.rs` drives the scratch-HOME migration end to end.
   HOME is process-global, so scenarios take turns behind its lock.
 - The capture hook is `WARP_NOTES_PAGE=settings`.
@@ -70,7 +73,8 @@ cargo build -p warp-notes
 ## App-specific contracts
 
 - Warp Station launches this app with `--store` (its `notes_store_path`
-  setting) plus `--repo`/`--note`; a customized store must follow.
+  setting) plus `--root`/`--repo`/`--note`; its titlebar asks for the root and
+  a repo's launcher pins that folder. A customized store must follow.
 - A missing binary makes Warp Station's notes surfaces show a toast; nothing
   else breaks.
 - Text size and palette come from `~/.warp/ui.json` through
