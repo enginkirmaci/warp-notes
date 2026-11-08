@@ -73,9 +73,9 @@ cargo build -p warp-notes
 ```
 
 - `tests/notes_probe.rs` covers the real window: tree, opening a note, the
-  live editor, row actions, Trash/Undo and the Trash dialog, task checkboxes,
-  list continuation, wikilinks, and the `--repo`/`--root`/`--note` launch
-  contract.
+  live editor, row actions, keyboard tree/search selection, Trash/Undo and
+  the Trash dialog, task checkboxes, list continuation, wikilinks, and the
+  `--repo`/`--root`/`--note` launch contract.
 - `tests/layout_migration.rs` drives the scratch-HOME migration end to end.
   HOME is process-global, so scenarios take turns behind its lock.
 - The capture hook is `WARP_NOTES_PAGE=settings`.

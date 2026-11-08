@@ -21,6 +21,10 @@ from DevTools into its own repo. Rust/GPUI (gpui-kit 0.9), one crate.
 - Moving a note or folder to Trash is one action with an Undo toast; Settings
   → General opens the Trash dialog to restore or empty it. Entries stay for
   30 days, and there is no permanent delete outside Empty Trash.
+- Keyboard-first tree: `Ctrl+Shift+E` focuses it, arrows move/collapse/expand,
+  Enter opens, `F2` renames, `Delete` trashes and `Ctrl+D` duplicates. The
+  title-bar search selects hits with Up/Down/Enter, and `Ctrl+/` opens the
+  shortcut sheet.
 - A single live editor that works like Obsidian's live preview: markdown
   renders in place while typing with its syntax hidden until the caret touches
   it, checkboxes toggle on click, Enter continues lists, links and

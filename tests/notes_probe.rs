@@ -1159,6 +1159,14 @@ fn an_external_edit_becomes_a_conflict_not_a_silent_overwrite(cx: &mut TestAppCo
     assert!(!page.read_with(cx, |page, cx| page.is_dirty(cx)));
 
     // ...and Reload drops the local buffer instead
+    let live = bounds(cx, "notes-live").expect("the live editor still renders");
+    cx.simulate_click(
+        Point::new(
+            live.origin.x + live.size.width / 2.,
+            live.origin.y + live.size.height / 2.,
+        ),
+        Modifiers::default(),
+    );
     cx.simulate_input(" again");
     cx.run_until_parked();
     std::fs::write(&note, "# Note\n\nEXTERNAL2\n").unwrap();
@@ -1642,6 +1650,159 @@ fn trashing_a_folder_closes_the_note_inside(cx: &mut TestAppContext) {
     page.read_with(cx, |page, _| {
         assert_eq!(page.open_note_path(), Some(alpha.join("archive/inside.md")));
     });
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn keyboard_tree_moves_and_opens(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-tree-keys");
+    let alpha = home.join("notes/projects/alpha");
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    let focus = page.read_with(cx, |page, _| page.tree_focus_handle());
+    cx.update(|window, cx| window.focus(&focus, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("down down enter");
+    page.read_with(cx, |page, _| {
+        assert_eq!(page.tree_cursor_for_probe(), Some(alpha.join("note.md")));
+        assert_eq!(page.open_note_path(), Some(alpha.join("note.md")));
+    });
+
+    // Ctrl+Shift+E leaves the editor and returns to the tree, where F2 acts
+    // on the cursor row.
+    cx.simulate_keystrokes("ctrl-shift-e f2");
+    assert!(
+        bounds(cx, "notes-prompt-card").is_some(),
+        "Ctrl+Shift+E moved focus to the tree"
+    );
+    click(cx, "notes-prompt-cancel");
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn search_selects_with_arrows(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-search-keys");
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    cx.update(|window, cx| {
+        let field = page.read(cx).search_handle().clone();
+        field.update(cx, |field, cx| {
+            field.set_value("alpha", window, cx);
+            field.focus(window, cx);
+        });
+        page.update(cx, |page, cx| page.run_search_for_probe("alpha".into(), cx));
+        drop(window.draw(cx));
+    });
+    cx.run_until_parked();
+    assert!(
+        cx.read_entity(&page, |page, app| page.search_hit_count(app) >= 2),
+        "the fixture has two alpha hits"
+    );
+    cx.simulate_keystrokes("down enter");
+    page.read_with(cx, |page, _| {
+        assert_eq!(
+            page.search_selected_for_probe(),
+            0,
+            "opening the hit resets the selection"
+        );
+        assert!(page.open_note_path().is_some(), "Enter opens the hit");
+    });
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn shortcut_sheet_opens_and_closes(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-shortcuts");
+    let (handle, _page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    click(cx, "note-item-note.md");
+    cx.simulate_keystrokes("ctrl-/");
+    assert!(bounds(cx, "shortcut-card").is_some());
+    click(cx, "shortcut-close");
+    assert!(bounds(cx, "shortcut-card").is_none());
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn f2_and_delete_operate_on_the_cursor(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-tree-edit");
+    let alpha = home.join("notes/projects/alpha");
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    let focus = page.read_with(cx, |page, _| page.tree_focus_handle());
+    cx.update(|window, cx| window.focus(&focus, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("down down f2");
+    assert!(bounds(cx, "notes-prompt-card").is_some(), "F2 opens Rename");
+    click(cx, "notes-prompt-cancel");
+    cx.update(|window, cx| window.focus(&focus, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("delete");
+    assert!(
+        !alpha.join("note.md").exists(),
+        "Delete trashes the cursor note"
+    );
+    assert!(bounds(cx, "notes-toast-action").is_some());
 
     let _ = std::fs::remove_dir_all(&home);
 }

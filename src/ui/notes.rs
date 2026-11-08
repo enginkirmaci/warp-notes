@@ -107,6 +107,21 @@ const SEARCH_POPUP_ROWS: usize = 8;
 
 const SHOW_TOOLTIPS: bool = true;
 
+const SHORTCUTS: &[(&str, &str)] = &[
+    ("Ctrl+K", "Search notes"),
+    ("Ctrl+Shift+E", "Focus the tree"),
+    ("Up / Down", "Move the tree cursor"),
+    ("Left / Right", "Collapse / expand"),
+    ("Enter", "Open the selected entry"),
+    ("F2", "Rename"),
+    ("Delete", "Move to Trash"),
+    ("Ctrl+D", "Duplicate"),
+    ("Ctrl+S", "Save now"),
+    ("Ctrl+N", "New note"),
+    ("Ctrl+\\", "Toggle the list"),
+    ("Ctrl+/", "This cheat sheet"),
+];
+
 /// What the status bar counts over the open note. Computed once per document
 /// revision, not once per frame: the scan is the length of the note.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -178,6 +193,12 @@ pub struct NotesPage {
     /// it consumes only the events the list actually answers — the outer
     /// scrollable must not also scroll on the same event.
     tree_scroll: UniformListScrollHandle,
+    /// The tree's keyboard focus and selected row, separate from the open
+    /// note: moving the cursor does not replace the editor.
+    tree_focus: gpui::FocusHandle,
+    tree_cursor: Option<PathBuf>,
+    /// The window root's focus, so global keys work before a note is open.
+    page_focus: gpui::FocusHandle,
     /// The settings pane's scroll handle, same job as `tree_scroll`.
     pub(crate) settings_scroll: ScrollHandle,
     /// The loaded tree behind an Rc: every editor keystroke re-renders the
@@ -216,6 +237,8 @@ pub struct NotesPage {
     search_field_box: Rc<Cell<Option<(f32, f32)>>>,
     search: Entity<InputState>,
     search_hits: Vec<notes_core::NotesSearchHit>,
+    /// The search popup's keyboard selection.
+    search_selected: usize,
     /// Debounce sequence; a keystroke invalidates any in-flight search.
     search_generation: u32,
     /// Ctrl+F in the editor: the find bar, its byte ranges and the current hit.
@@ -223,6 +246,8 @@ pub struct NotesPage {
     find: Entity<InputState>,
     find_hits: Vec<std::ops::Range<usize>>,
     find_index: usize,
+    /// Ctrl+/ shortcut cheat sheet.
+    shortcut_open: bool,
     /// The live markdown editor.
     editor: Entity<LiveEditorState>,
     /// The debounced autosave: every edit bumps this, and only the task from
@@ -343,6 +368,9 @@ impl NotesPage {
             list_visible,
             splitter_drag: Rc::new(Cell::new(None)),
             tree_scroll: UniformListScrollHandle::default(),
+            tree_focus: cx.focus_handle(),
+            tree_cursor: None,
+            page_focus: cx.focus_handle(),
             settings_scroll: ScrollHandle::default(),
             tree: Rc::new(Vec::new()),
             tree_loaded_for: None,
@@ -360,11 +388,13 @@ impl NotesPage {
             search_field_box: Rc::new(Cell::new(None)),
             search,
             search_hits: Vec::new(),
+            search_selected: 0,
             search_generation: 0,
             find_open: false,
             find,
             find_hits: Vec::new(),
             find_index: 0,
+            shortcut_open: false,
             editor,
             save_epoch: 0,
             create_open: false,
@@ -435,6 +465,9 @@ impl NotesPage {
         })
         .detach();
         page.set_note_window_title(window);
+        if page.open_note.is_none() {
+            window.focus(&page.page_focus, cx);
+        }
         page
     }
 
@@ -641,6 +674,7 @@ impl NotesPage {
         self.find_hits.clear();
         self.find_index = 0;
         let folder = path.parent().map(Path::to_path_buf);
+        self.tree_cursor = Some(path.clone());
         self.open_note = Some(path.clone());
         // the pointer survives restarts, store-relative so a moved store
         // keeps it (resolve_note_in_store also takes absolute paths back)
@@ -966,6 +1000,7 @@ impl NotesPage {
         self.search_generation += 1;
         let generation = self.search_generation;
         let term = term.trim().to_string();
+        self.search_selected = 0;
         if term.is_empty() {
             self.search_hits.clear();
             cx.notify();
@@ -985,11 +1020,23 @@ impl NotesPage {
             let _ = this.update(cx, |this: &mut NotesPage, cx| {
                 if this.search_generation == generation {
                     this.search_hits = hits;
+                    this.search_selected = 0;
                     cx.notify();
                 }
             });
         })
         .detach();
+    }
+
+    fn open_search_hit(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(hit) = self.search_hits.get(index).cloned() else {
+            return;
+        };
+        self.search
+            .update(cx, |field, cx| field.set_value(String::new(), window, cx));
+        self.search_hits.clear();
+        self.search_selected = 0;
+        self.open_note(hit.path, window, cx);
     }
 
     fn create_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1127,6 +1174,13 @@ impl NotesPage {
                     self.set_note_window_title(window);
                 }
                 self.expanded.retain(|folder| !folder.starts_with(&path));
+                if self
+                    .tree_cursor
+                    .as_ref()
+                    .is_some_and(|cursor| cursor == &path || cursor.starts_with(&path))
+                {
+                    self.tree_cursor = path.parent().map(Path::to_path_buf);
+                }
                 self.remember_expanded();
                 self.refresh_tree(&scope);
                 self.notice_with_action(
@@ -1235,6 +1289,8 @@ impl NotesPage {
         cx: &mut Context<Self>,
     ) {
         self.row_menu = None;
+        self.tree_cursor = Some(path.clone());
+        window.focus(&self.tree_focus, cx);
         if is_folder {
             if self.expanded.contains(&path) {
                 self.expanded.remove(&path);
@@ -1387,6 +1443,10 @@ impl NotesPage {
             .drain()
             .map(|path| rewrite_path(&path, old, new))
             .collect();
+        self.tree_cursor = self
+            .tree_cursor
+            .as_ref()
+            .map(|path| rewrite_path(path, old, new));
         self.remember_expanded();
         self.age_cache = None;
         self.note_names_stale = true;
@@ -1594,6 +1654,24 @@ impl NotesPage {
     pub fn open_note_path(&self) -> Option<PathBuf> {
         self.open_note.clone()
     }
+
+    /// The tree's focus handle — for headless keyboard probes.
+    #[doc(hidden)]
+    pub fn tree_focus_handle(&self) -> gpui::FocusHandle {
+        self.tree_focus.clone()
+    }
+
+    /// The selected tree row — for headless keyboard probes.
+    #[doc(hidden)]
+    pub fn tree_cursor_for_probe(&self) -> Option<PathBuf> {
+        self.tree_cursor.clone()
+    }
+
+    /// The search popup's selected row — for headless arrow-key probes.
+    #[doc(hidden)]
+    pub fn search_selected_for_probe(&self) -> usize {
+        self.search_selected
+    }
 }
 
 fn byte_to_char(text: &str, byte: usize) -> usize {
@@ -1628,6 +1706,23 @@ fn collect_note_names(items: &[Rc<notes_core::NotesTreeItem>], names: &mut Vec<S
             names.push(item.name.clone());
         }
     }
+}
+
+fn find_tree_item(
+    items: &[Rc<notes_core::NotesTreeItem>],
+    path: &Path,
+) -> Option<Rc<notes_core::NotesTreeItem>> {
+    for item in items {
+        if item.full_path == path {
+            return Some(item.clone());
+        }
+        if item.is_folder
+            && let Some(found) = find_tree_item(&item.children, path)
+        {
+            return Some(found);
+        }
+    }
+    None
 }
 
 /// Depth-first search of the note tree for a file name, case-insensitive like
@@ -1834,12 +1929,14 @@ impl Render for NotesPage {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "No note selected".into());
 
+        let page_focus = self.page_focus.clone();
         let mut root = div()
             .size_full()
             .flex()
             .flex_col()
             .min_h_0()
             .bg(theme::background())
+            .track_focus(&page_focus)
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 let control = event.keystroke.modifiers.control;
                 if control && event.keystroke.key == "s" {
@@ -1857,6 +1954,13 @@ impl Render for NotesPage {
                 } else if control && event.keystroke.key == "k" {
                     // the design's Ctrl+K: the title bar's search field
                     this.search.update(cx, |field, cx| field.focus(window, cx));
+                    cx.stop_propagation();
+                } else if control && event.keystroke.modifiers.shift && event.keystroke.key == "e" {
+                    window.focus(&this.tree_focus, cx);
+                    cx.stop_propagation();
+                } else if control && event.keystroke.key == "/" {
+                    this.shortcut_open = !this.shortcut_open;
+                    cx.notify();
                     cx.stop_propagation();
                 } else if control && event.keystroke.key == "," {
                     this.set_section(
@@ -1879,6 +1983,10 @@ impl Render for NotesPage {
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.create_open {
                     this.create_open = false;
+                    cx.notify();
+                    cx.stop_propagation();
+                } else if event.keystroke.key == "escape" && this.shortcut_open {
+                    this.shortcut_open = false;
                     cx.notify();
                     cx.stop_propagation();
                 }
@@ -1921,6 +2029,9 @@ impl Render for NotesPage {
         }
         if self.trash_open {
             root = root.child(self.render_trash_dialog(window, cx));
+        }
+        if self.shortcut_open {
+            root = root.child(self.render_shortcuts(cx));
         }
         root
     }
@@ -2708,6 +2819,111 @@ impl NotesPage {
             .child(card)
             .into_any_element()
     }
+
+    fn render_shortcuts(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let mut rows = div().flex().flex_col().gap_1();
+        for (keys, label) in SHORTCUTS {
+            rows = rows.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .rounded(px(4.))
+                    .px_2()
+                    .py_1()
+                    .child(
+                        div()
+                            .w(px(118.))
+                            .flex_shrink_0()
+                            .font_family(SharedString::from(theme::code_font()))
+                            .text_size(px(theme::font_mono_meta()))
+                            .text_color(theme::text_dim())
+                            .child(*keys),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(theme::font_body()))
+                            .text_color(theme::text())
+                            .child(*label),
+                    ),
+            );
+        }
+        let card = div()
+            .id("shortcut-card")
+            .debug_selector(|| "shortcut-card".into())
+            .role(gpui::Role::Dialog)
+            .occlude()
+            .w(px(theme::PROMPT_WIDTH + 60.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(theme::line_strong())
+            .bg(theme::panel())
+            .shadow_lg()
+            .p_4()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .text_size(px(theme::font_screen_title()))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme::text())
+                    .child("Keyboard"),
+            )
+            .child(
+                div()
+                    .text_size(px(theme::font_meta()))
+                    .text_color(theme::text_muted())
+                    .child("The editor keeps its own arrow keys while it has focus."),
+            )
+            .child(rows)
+            .child(
+                div().flex().flex_row().justify_end().child(
+                    div()
+                        .id("shortcut-close")
+                        .debug_selector(|| "shortcut-close".into())
+                        .a11y_button("Close keyboard help")
+                        .cursor_pointer()
+                        .rounded(px(6.))
+                        .h(px(theme::scaled(shell::CONTROL_HEIGHT) - 8.))
+                        .px_3()
+                        .flex()
+                        .items_center()
+                        .bg(theme::accent())
+                        .text_color(theme::on_accent())
+                        .text_size(px(theme::font_control()))
+                        .font_weight(FontWeight::MEDIUM)
+                        .hover(|style| style.opacity(0.9))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.shortcut_open = false;
+                            cx.notify();
+                        }))
+                        .child("Close"),
+                ),
+            );
+        div()
+            .id("shortcut-scrim")
+            .absolute()
+            .inset_0()
+            .occlude()
+            .bg(theme::SCRIM)
+            .flex()
+            .items_center()
+            .justify_center()
+            .p_4()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.shortcut_open = false;
+                    cx.notify();
+                }),
+            )
+            .child(card)
+            .into_any_element()
+    }
 }
 impl NotesPage {
     /// The floating window paints its own title bar: the window is created
@@ -2898,7 +3114,26 @@ impl NotesPage {
                                         field.set_value(String::new(), window, cx)
                                     });
                                     this.search_hits.clear();
+                                    this.search_selected = 0;
                                     cx.notify();
+                                    cx.stop_propagation();
+                                } else if event.keystroke.key == "down" {
+                                    if !this.search_hits.is_empty() {
+                                        let last = this
+                                            .search_hits
+                                            .len()
+                                            .min(SEARCH_POPUP_ROWS)
+                                            .saturating_sub(1);
+                                        this.search_selected = (this.search_selected + 1).min(last);
+                                        cx.notify();
+                                    }
+                                    cx.stop_propagation();
+                                } else if event.keystroke.key == "up" {
+                                    this.search_selected = this.search_selected.saturating_sub(1);
+                                    cx.notify();
+                                    cx.stop_propagation();
+                                } else if event.keystroke.key == "enter" {
+                                    this.open_search_hit(this.search_selected, window, cx);
                                     cx.stop_propagation();
                                 }
                             },
@@ -3189,9 +3424,14 @@ impl NotesPage {
     /// bar's popup — so the list keeps its scroll and selection while typing.
     fn render_tree(&mut self, window: &Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let can_create = self.notes_scope.is_some() || !self.tree.is_empty();
+        let tree_focus = self.tree_focus.clone();
         let mut tree = shell::list_pane(self.prefs.list_width)
             .id("notes-sidebar")
             .debug_selector(|| "notes-sidebar".into())
+            .track_focus(&tree_focus)
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                this.handle_tree_key(event, window, cx);
+            }))
             // the head: the list's title, then the two tree tools, exactly the
             // shell's list-head shape
             .child(
@@ -3368,6 +3608,7 @@ impl NotesPage {
         // stays the way to reach everything
         for (index, hit) in hits.iter().take(SEARCH_POPUP_ROWS).enumerate() {
             let path = hit.path.clone();
+            let selected = index == self.search_selected;
             rows = rows.child(
                 div()
                     .id(("notes-search-hit", index as u64))
@@ -3382,6 +3623,7 @@ impl NotesPage {
                     .py_1p5()
                     .flex()
                     .flex_col()
+                    .when(selected, |row| row.bg(theme::raised()))
                     .hover(|s| s.bg(theme::raised()))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.search
@@ -3458,6 +3700,144 @@ impl NotesPage {
         }
     }
 
+    fn visible_row_paths(&self) -> Vec<(PathBuf, bool)> {
+        let mut rows = Vec::new();
+        self.visible_tree_rows(&self.tree, 0, &mut rows);
+        rows.into_iter()
+            .map(|(item, _)| (item.full_path.clone(), item.is_folder))
+            .collect()
+    }
+
+    fn tree_item_for(&self, path: &Path) -> Option<Rc<notes_core::NotesTreeItem>> {
+        find_tree_item(&self.tree, path)
+    }
+
+    fn move_tree_cursor(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let rows = self.visible_row_paths();
+        if rows.is_empty() {
+            return;
+        }
+        let Some(current) = self
+            .tree_cursor
+            .as_ref()
+            .and_then(|cursor| rows.iter().position(|(path, _)| path == cursor))
+        else {
+            let index = if delta < 0 { rows.len() - 1 } else { 0 };
+            self.tree_cursor = Some(rows[index].0.clone());
+            cx.notify();
+            return;
+        };
+        let next = (current as isize)
+            .saturating_add(delta)
+            .clamp(0, rows.len() as isize - 1) as usize;
+        self.tree_cursor = Some(rows[next].0.clone());
+        cx.notify();
+    }
+
+    fn jump_tree_cursor(&mut self, last: bool, cx: &mut Context<Self>) {
+        let rows = self.visible_row_paths();
+        let Some((path, _)) = rows.get(if last {
+            rows.len().saturating_sub(1)
+        } else {
+            0
+        }) else {
+            return;
+        };
+        self.tree_cursor = Some(path.clone());
+        cx.notify();
+    }
+
+    fn collapse_or_parent(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.tree_cursor.clone() else {
+            return;
+        };
+        let is_folder = self.tree_item_for(&path).is_some_and(|item| item.is_folder);
+        if is_folder && self.expanded.contains(&path) {
+            self.expanded.remove(&path);
+            self.remember_expanded();
+        } else if let Some(parent) = path.parent()
+            && self
+                .visible_row_paths()
+                .iter()
+                .any(|(candidate, _)| candidate == parent)
+        {
+            self.tree_cursor = Some(parent.to_path_buf());
+        }
+        cx.notify();
+    }
+
+    fn expand_or_child(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.tree_cursor.clone() else {
+            return;
+        };
+        let Some(item) = self.tree_item_for(&path) else {
+            return;
+        };
+        if !item.is_folder {
+            return;
+        }
+        if !self.expanded.contains(&path) {
+            self.expanded.insert(path);
+            self.remember_expanded();
+        } else if let Some(child) = item.children.first() {
+            self.tree_cursor = Some(child.full_path.clone());
+        }
+        cx.notify();
+    }
+
+    fn activate_tree_cursor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self.tree_cursor.clone() else {
+            return;
+        };
+        let is_folder = self.tree_item_for(&path).is_some_and(|item| item.is_folder);
+        self.open_tree_entry(path, is_folder, window, cx);
+    }
+
+    fn handle_tree_key(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = event.keystroke.key.as_str();
+        if event.keystroke.modifiers.control && key == "d" {
+            if let Some(path) = self.tree_cursor.clone() {
+                self.duplicate_path(path, window, cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
+        if event.keystroke.modifiers.shift && key == "f10" {
+            if let Some(path) = self.tree_cursor.clone() {
+                let is_folder = self.tree_item_for(&path).is_some_and(|item| item.is_folder);
+                self.open_row_menu(path, is_folder, window.mouse_position(), cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
+        match key {
+            "down" => self.move_tree_cursor(1, cx),
+            "up" => self.move_tree_cursor(-1, cx),
+            "home" => self.jump_tree_cursor(false, cx),
+            "end" => self.jump_tree_cursor(true, cx),
+            "left" => self.collapse_or_parent(cx),
+            "right" => self.expand_or_child(cx),
+            "enter" => self.activate_tree_cursor(window, cx),
+            "f2" => {
+                if let Some(path) = self.tree_cursor.clone() {
+                    self.start_prompt(PromptKind::Rename, path, window, cx);
+                }
+            }
+            "delete" | "backspace" => {
+                if let Some(path) = self.tree_cursor.clone() {
+                    self.trash_path(path, window, cx);
+                }
+            }
+            _ => return,
+        }
+        cx.stop_propagation();
+    }
+
     /// One row of the file tree: 34 px, the selected one lifted with the
     /// accent down its left edge, and a `changes` dot on notes with unsaved
     /// text.
@@ -3471,6 +3851,7 @@ impl NotesPage {
     ) -> gpui::AnyElement {
         let expanded = self.expanded.contains(&item.full_path);
         let selected = self.open_note.as_ref() == Some(&item.full_path);
+        let cursor = self.tree_cursor.as_ref() == Some(&item.full_path);
         let unsaved = self.dirty.contains_key(&item.full_path)
             || (selected && !item.is_folder && editor_text != self.saved_text.as_str());
         let id = gpui::ElementId::NamedInteger(
@@ -3504,6 +3885,9 @@ impl NotesPage {
             })
             .when(!selected, |d| d.text_color(theme::text_dim()))
             .when(!selected, |d| d.hover(|s| s.bg(theme::panel())))
+            .when(cursor && !selected, |d| {
+                d.bg(theme::raised()).text_color(theme::text())
+            })
             .on_mouse_down(MouseButton::Right, {
                 let path = item.full_path.clone();
                 let is_folder = item.is_folder;
@@ -3515,6 +3899,8 @@ impl NotesPage {
             .on_click({
                 let item = item.clone();
                 cx.listener(move |this, _, window, cx| {
+                    this.tree_cursor = Some(item.full_path.clone());
+                    window.focus(&this.tree_focus, cx);
                     if item.is_folder {
                         if this.expanded.contains(&item.full_path) {
                             this.expanded.remove(&item.full_path);
