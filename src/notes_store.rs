@@ -25,6 +25,9 @@ pub struct NotesTreeItem {
     pub name: String,
     pub full_path: PathBuf,
     pub is_folder: bool,
+    /// The file's last write, read once while the tree is walking: the list's
+    /// row stamp reads this instead of stat-ing every visible row per frame.
+    pub modified: Option<std::time::SystemTime>,
     pub children: Vec<Rc<NotesTreeItem>>,
 }
 
@@ -79,11 +82,13 @@ fn load_directory(directory: &Path) -> Vec<Rc<NotesTreeItem>> {
                 name,
                 full_path: entry.path(),
                 is_folder: true,
+                modified: entry.metadata().ok().and_then(|meta| meta.modified().ok()),
             })),
             Ok(_) if name.to_lowercase().ends_with(".md") => notes.push(Rc::new(NotesTreeItem {
                 name,
                 full_path: entry.path(),
                 is_folder: false,
+                modified: entry.metadata().ok().and_then(|meta| meta.modified().ok()),
                 children: Vec::new(),
             })),
             _ => {}

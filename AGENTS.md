@@ -17,8 +17,9 @@ the modules and the binary is a thin bootstrap. The probes build the real
   search and the `--note` path containment.
 - `src/paths.rs` — `~/.warp/notes` for settings, `~/.warp/logs` for logs,
   `~/notes` for the shared store, and the legacy-layout migration.
-- `src/ui/notes.rs` — the rail, tree, row actions/prompts, live editor and
-  find bar.
+- `src/ui/notes.rs` — the rail, the strip under the titlebar, the list head
+  (counts and the All/Pinned scope), the tree and folder bands, row
+  actions/prompts, the note head, live editor and find bar.
 - `src/ui/settings.rs` — General and Appearance: store path, shared text size,
   palette and reduce motion.
 - `src/ui_prefs.rs` — the remembered shell in the versioned snake_case

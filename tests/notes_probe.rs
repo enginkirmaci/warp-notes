@@ -64,6 +64,13 @@ fn click_str(cx: &mut VisualTestContext, selector: &str) {
     cx.update(|window, cx| drop(window.draw(cx)));
 }
 
+/// Move the open note to Trash through the head's verb menu: the detail head
+/// carries no Trash button of its own.
+fn trash_open_note(cx: &mut VisualTestContext) {
+    click(cx, "note-verbs");
+    click(cx, "notes-menu-trash");
+}
+
 fn set_prompt(cx: &mut VisualTestContext, page: &gpui::Entity<NotesPage>, value: &str) {
     let input = page.read_with(cx, |page, _| page.prompt_input_handle().clone());
     cx.update(|window, cx| {
@@ -1542,7 +1549,7 @@ fn trash_undo_restores_the_note_and_reopens_it(cx: &mut TestAppContext) {
     cx.update(|window, cx| drop(window.draw(cx)));
 
     click(cx, "note-item-note.md");
-    click(cx, "note-trash");
+    trash_open_note(cx);
     assert!(!note.exists(), "the live copy is gone");
     page.read_with(cx, |page, _| {
         assert_eq!(page.open_note_path(), None);
@@ -1598,7 +1605,7 @@ fn trashing_a_dirty_note_keeps_its_text_for_undo(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.simulate_input("typed before trash");
     cx.run_until_parked();
-    click(cx, "note-trash");
+    trash_open_note(cx);
     assert!(!note.exists());
 
     click(cx, "notes-toast-action");
@@ -1635,7 +1642,7 @@ fn trash_dialog_restores_and_empties(cx: &mut TestAppContext) {
     cx.update(|window, cx| drop(window.draw(cx)));
 
     click(cx, "note-item-note.md");
-    click(cx, "note-trash");
+    trash_open_note(cx);
     click_str(cx, "note-actions-task.md");
     click(cx, "notes-menu-trash");
     assert!(!alpha.join("note.md").exists());
@@ -1920,7 +1927,7 @@ fn pinned_notes_render_and_unpin(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     cx.update(theme::apply_kit_theme);
     let home = temp_home("warpnotes-probe-pin");
-    let (handle, _page) = open_page(
+    let (handle, page) = open_page(
         cx,
         Launch {
             store_root: Some(home.join("notes")),
@@ -1936,25 +1943,35 @@ fn pinned_notes_render_and_unpin(cx: &mut TestAppContext) {
     click(cx, "note-item-note.md");
     click_str(cx, "note-actions-note.md");
     click(cx, "notes-menu-pin");
-    assert!(
-        bounds(cx, "notes-pinned").is_some(),
-        "the pin section appears"
-    );
-    assert!(bounds(cx, "pinned-item-note").is_some());
     let prefs: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(home.join("settings.json")).unwrap())
             .unwrap();
     assert_eq!(prefs["pinned"][0], "projects/alpha/note.md");
 
-    click_str(cx, "pinned-star-0");
-    assert!(
-        bounds(cx, "notes-pinned").is_none(),
-        "unpin removes the section"
+    // the pin shows up as the list head's Pinned scope, not a band over the tree
+    click(cx, "notes-list-scope-pinned");
+    assert_eq!(
+        page.read_with(cx, |page, _| page.list_scope_for_probe()),
+        "pinned"
     );
+    assert!(bounds(cx, "note-item-note.md").is_some(), "the pinned row");
+    assert!(bounds(cx, "notes-pinned-empty").is_none());
+
+    click_str(cx, "note-pin-note.md");
     let prefs: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(home.join("settings.json")).unwrap())
             .unwrap();
     assert_eq!(prefs["pinned"].as_array().map(Vec::len), Some(0));
+    assert!(
+        bounds(cx, "notes-pinned-empty").is_some(),
+        "the empty pinned scope says so"
+    );
+
+    click(cx, "notes-list-scope-all");
+    assert_eq!(
+        page.read_with(cx, |page, _| page.list_scope_for_probe()),
+        "all"
+    );
 
     let _ = std::fs::remove_dir_all(&home);
 }
@@ -2329,7 +2346,10 @@ fn tabs_keep_their_buffers_and_close(cx: &mut TestAppContext) {
         page.read_with(cx, |page, _| page.tab_paths_for_probe())
             .is_empty()
     );
-    assert!(bounds(cx, "notes-tab-strip").is_none());
+    // the strip stays: its home tab names the list
+    assert!(bounds(cx, "notes-tab-strip").is_some());
+    assert!(bounds(cx, "notes-strip-home").is_some());
+    assert!(bounds(cx, "note-tab-0").is_none());
     assert_eq!(cx.window_title().as_deref(), Some("Warp Notes"));
 
     let _ = std::fs::remove_dir_all(&home);
@@ -2665,6 +2685,297 @@ fn a_relaunch_restores_the_arranged_ui(cx: &mut TestAppContext) {
     assert!(
         bounds(cx, "note-item-task.md").is_some(),
         "the expanded folder stayed expanded"
+    );
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn tree_rows_fill_the_pane(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-row-width");
+    seed_notes(&home);
+    let (handle, _page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    let sidebar = bounds(cx, "notes-sidebar").expect("the list pane");
+    let row = bounds(cx, "note-item-note.md").expect("the note row");
+    // the list's hairline border is the one pixel the row does not own
+    let inner = sidebar.size.width - px(1.);
+    assert!(
+        (row.size.width - inner).abs() <= px(2.),
+        "the row must span the pane: row {} vs inner {}",
+        row.size.width,
+        inner
+    );
+    assert_eq!(
+        row.size.height,
+        px(theme::scaled(warp_notes::ui::notes::TREE_ROW_HEIGHT)),
+        "the family's row height"
+    );
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn folder_bands_carry_their_note_count(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-band-count");
+    seed_notes(&home);
+    std::fs::create_dir_all(home.join("notes/projects/alpha/sub")).unwrap();
+    std::fs::write(home.join("notes/projects/alpha/sub/one.md"), "# One\n").unwrap();
+    std::fs::write(home.join("notes/projects/alpha/sub/two.md"), "# Two\n").unwrap();
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    assert_eq!(
+        page.read_with(cx, |page, _| page.band_count_for_probe("sub")),
+        Some(2)
+    );
+    assert!(
+        bounds(cx, "note-item-sub").is_some(),
+        "the folder band renders"
+    );
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn list_head_counts_notes_and_pins(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-head-counts");
+    seed_notes(&home);
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    assert!(bounds(cx, "notes-list-summary").is_some());
+    assert_eq!(
+        page.read_with(cx, |page, _| page.list_summary_for_probe()),
+        "3 notes · 0 pinned"
+    );
+
+    click(cx, "note-item-note.md");
+    click_str(cx, "note-actions-note.md");
+    click(cx, "notes-menu-pin");
+    assert_eq!(
+        page.read_with(cx, |page, _| page.list_summary_for_probe()),
+        "3 notes · 1 pinned"
+    );
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn the_strip_sits_above_both_panes(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-strip");
+    seed_notes(&home);
+    let (handle, _page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    let strip = bounds(cx, "notes-tab-strip").expect("the strip is always there");
+    let sidebar = bounds(cx, "notes-sidebar").expect("the list pane");
+    let detail = bounds(cx, "notes-detail").expect("the detail pane");
+    assert!(
+        strip.origin.y + strip.size.height <= sidebar.origin.y + px(1.),
+        "the strip sits above the panes"
+    );
+    assert!(
+        (strip.origin.x - sidebar.origin.x).abs() <= px(1.),
+        "the strip starts with the list"
+    );
+    assert!(
+        strip.origin.x + strip.size.width >= detail.origin.x + detail.size.width - px(1.),
+        "the strip spans the stage"
+    );
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn the_home_tab_focuses_the_tree(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-home-tab");
+    seed_notes(&home);
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    click(cx, "note-item-note.md");
+    click(cx, "notes-strip-home");
+    let tree_focus = page.read_with(cx, |page, _| page.tree_focus_handle());
+    assert_eq!(
+        cx.update(|window, cx| window.focused(cx)),
+        Some(tree_focus),
+        "the home tab hands the keyboard to the tree"
+    );
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn the_head_leads_with_the_note_title(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-head");
+    seed_notes(&home);
+    let (handle, _page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    click(cx, "note-item-note.md");
+    let pane = bounds(cx, "notes-detail").expect("the detail pane");
+    let title = bounds(cx, "note-title").expect("the note title");
+    assert!(
+        title.origin.x >= pane.origin.x + px(24.),
+        "the head starts at the detail padding"
+    );
+    assert!(
+        title.size.height > px(20.),
+        "the title is set at the screen-title step"
+    );
+    assert!(bounds(cx, "note-verbs").is_some(), "the verb cluster");
+    assert!(
+        bounds(cx, "note-trash").is_none(),
+        "Trash moved into the verb menu"
+    );
+    assert!(bounds(cx, "note-pin-toggle").is_some());
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn the_verb_menu_trashes_the_note(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-verbs");
+    seed_notes(&home);
+    let note = home.join("notes/projects/alpha/note.md");
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    click(cx, "note-item-note.md");
+    click(cx, "note-verbs");
+    assert!(
+        bounds(cx, "notes-row-menu").is_some(),
+        "the verb menu opens"
+    );
+    click(cx, "notes-menu-trash");
+    assert!(!note.exists(), "the note went to Trash");
+    assert_eq!(page.read_with(cx, |page, _| page.open_note_path()), None);
+    assert!(
+        bounds(cx, "notes-toast-action").is_some(),
+        "Undo is offered"
+    );
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn empty_state_offers_a_new_note(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-empty");
+    seed_notes(&home);
+    let (handle, _page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    assert!(bounds(cx, "notes-empty").is_some(), "nothing is open");
+    click(cx, "notes-empty-new");
+    assert!(
+        bounds(cx, "note-create-form").is_some(),
+        "the empty state starts the new-note form"
     );
 
     let _ = std::fs::remove_dir_all(&home);

@@ -46,6 +46,14 @@ enum Section {
     Settings,
 }
 
+/// What the list pane shows: the whole tree, or just the pinned notes. Per
+/// window, like the tree cursor — two windows do not fight over one scope.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ListScope {
+    All,
+    Pinned,
+}
+
 /// The launch configuration the CLI parsed: the store root (Warp Station
 /// passes the resolved `notes_store_path`; standalone defaults to ~/notes),
 /// an optional pinned repo scope (that repo's folder under `projects/`), an
@@ -98,7 +106,7 @@ fn notice_ttl(kind: NoticeKind) -> std::time::Duration {
 /// Tooltips always show in the standalone window (DevTools gates its own
 /// embedded surfaces by a setting; this app has none).
 /// One tree row: fixed, so `uniform_list` can size the whole list.
-const TREE_ROW_HEIGHT: f32 = 34.;
+pub const TREE_ROW_HEIGHT: f32 = 44.;
 
 /// The title bar's search field: the design's `min(460px, 36vw)` measure,
 /// fixed so the popup under it can line up with its edges.
@@ -241,6 +249,8 @@ pub struct NotesPage {
     pub(crate) prefs: UiPrefs,
     /// Ctrl+\ and the title bar's toggle hide the list pane.
     list_visible: bool,
+    /// The list pane's scope: the tree, or the pinned notes.
+    list_scope: ListScope,
     /// active list resize: (start pointer x, start list width); shared with
     /// the paint-phase listener registration because window.on_mouse_event
     /// may only be called during paint in this gpui rev
@@ -479,6 +489,7 @@ impl NotesPage {
             settings_section,
             prefs,
             list_visible,
+            list_scope: ListScope::All,
             splitter_drag: Rc::new(Cell::new(None)),
             tree_scroll: UniformListScrollHandle::default(),
             tree_focus: cx.focus_handle(),
@@ -1816,13 +1827,6 @@ impl NotesPage {
         cx.notify();
     }
 
-    fn trash_current(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(path) = self.open_note.clone() else {
-            return;
-        };
-        self.trash_path(path, window, cx);
-    }
-
     /// Moves a note or folder to Trash. The open buffer (or a buffer inside a
     /// trashed folder) is written or parked as a recovery copy first; a Trash
     /// failure leaves the editor exactly where it was.
@@ -2405,6 +2409,41 @@ impl NotesPage {
         self.tree_cursor.clone()
     }
 
+    /// The list head's live counts — for headless head probes.
+    #[doc(hidden)]
+    pub fn list_summary_for_probe(&self) -> String {
+        self.summary_text()
+    }
+
+    /// Which list scope is showing: "all" or "pinned".
+    #[doc(hidden)]
+    pub fn list_scope_for_probe(&self) -> &'static str {
+        match self.list_scope {
+            ListScope::All => "all",
+            ListScope::Pinned => "pinned",
+        }
+    }
+
+    /// How many notes a folder in the tree holds — for headless band probes.
+    #[doc(hidden)]
+    pub fn band_count_for_probe(&self, folder: &str) -> Option<usize> {
+        fn find<'a>(
+            items: &'a [Rc<notes_core::NotesTreeItem>],
+            folder: &str,
+        ) -> Option<&'a notes_core::NotesTreeItem> {
+            for item in items {
+                if item.is_folder && item.name == folder {
+                    return Some(item);
+                }
+                if let Some(found) = find(&item.children, folder) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        find(&self.tree, folder).map(note_count)
+    }
+
     /// The search popup's selected row — for headless arrow-key probes.
     #[doc(hidden)]
     pub fn search_selected_for_probe(&self) -> usize {
@@ -2512,6 +2551,20 @@ fn collect_note_paths(items: &[Rc<notes_core::NotesTreeItem>], out: &mut Vec<Pat
         } else {
             out.push(item.full_path.clone());
         }
+    }
+}
+
+/// The count's noun: "1 note", "7 notes".
+fn note_word(count: usize) -> &'static str {
+    if count == 1 { "note" } else { "notes" }
+}
+
+/// How many notes a folder holds, at any depth.
+fn note_count(item: &notes_core::NotesTreeItem) -> usize {
+    if item.is_folder {
+        item.children.iter().map(|child| note_count(child)).sum()
+    } else {
+        1
     }
 }
 
@@ -2864,9 +2917,18 @@ fn edited_age(path: &Path, cache: &mut Option<(PathBuf, String, std::time::Insta
         return label.clone();
     }
     let now = std::time::Instant::now();
-    let label = std::fs::metadata(path)
-        .ok()
-        .and_then(|meta| meta.modified().ok())
+    let label = age_label(
+        std::fs::metadata(path)
+            .ok()
+            .and_then(|meta| meta.modified().ok()),
+    );
+    *cache = Some((path.to_path_buf(), label.clone(), now));
+    label
+}
+
+/// A note's age as the list and the head print it: now, 5m, 2h, 3d.
+fn age_label(modified: Option<std::time::SystemTime>) -> String {
+    modified
         .and_then(|modified| std::time::SystemTime::now().duration_since(modified).ok())
         .map(|age| {
             let elapsed = age.as_secs();
@@ -2877,9 +2939,7 @@ fn edited_age(path: &Path, cache: &mut Option<(PathBuf, String, std::time::Insta
                 _ => format!("{}d", elapsed / 86_400),
             }
         })
-        .unwrap_or_else(|| "now".to_string());
-    *cache = Some((path.to_path_buf(), label.clone(), now));
-    label
+        .unwrap_or_else(|| "now".to_string())
 }
 
 impl Render for NotesPage {
@@ -2899,13 +2959,6 @@ impl Render for NotesPage {
         // re-copy its whole text every keystroke
         let editor_text = self.editor.read(cx).value();
         let dirty = self.open_note.is_some() && editor_text.as_ref() != self.saved_text.as_str();
-        let note_title = self
-            .open_note
-            .as_ref()
-            .and_then(|p| p.file_name())
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "No note selected".into());
-
         let page_focus = self.page_focus.clone();
         let mut root = div()
             .size_full()
@@ -3034,7 +3087,7 @@ impl Render for NotesPage {
                     .flex()
                     .flex_row()
                     .child(self.render_rail(cx))
-                    .child(self.render_body(note_title, dirty, window, cx)),
+                    .child(self.render_body(dirty, window, cx)),
             )
             .relative();
         // the search results float over the panes, under the title bar field
@@ -3124,7 +3177,9 @@ impl NotesPage {
             .into_any_element()
     }
 
-    /// Everything right of the rail: the list and the editor (or Settings).
+    /// The strip under the titlebar: the list's own tab, then one per open
+    /// note. The family's shape — `shell::tab_strip()` on the window chrome,
+    /// the selected tab joining the surface under it.
     fn render_tab_strip(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let active_text = self.editor.read(cx).value().to_string();
         let tabs: Vec<(PathBuf, String, bool, bool)> = self
@@ -3145,79 +3200,82 @@ impl NotesPage {
                 (tab.path.clone(), title, index == self.active_tab, dirty)
             })
             .collect();
-        let mut strip = div()
+        let mut strip = shell::tab_strip()
             .id("notes-tab-strip")
             .debug_selector(|| "notes-tab-strip".into())
-            .flex()
-            .flex_row()
-            .items_center()
-            .h(px(34.))
-            .flex_shrink_0()
-            .border_b_1()
-            .border_color(theme::border_light())
-            .overflow_hidden();
+            .overflow_x_scroll()
+            // the list's own tab, as station's "Repositories": it names the
+            // pane below and gives the strip a resting selection
+            .child(
+                shell::strip_tab(
+                    "notes-strip-home",
+                    "Notes",
+                    tabs.is_empty(),
+                    theme::surface(),
+                )
+                .debug_selector(|| "notes-strip-home".into())
+                .flex_shrink_0()
+                .child(icon(
+                    "icons/icon-note.svg",
+                    px(theme::icon_small()),
+                    theme::text_dim(),
+                ))
+                .child("Notes")
+                .on_click(cx.listener(|this, _, window, cx| {
+                    window.focus(&this.tree_focus, cx);
+                    cx.notify();
+                })),
+            );
         for (index, (_, title, active, dirty)) in tabs.iter().enumerate() {
             strip = strip.child(
-                div()
-                    .id(("note-tab", index as u64))
-                    .debug_selector(move || format!("note-tab-{index}"))
-                    .a11y_button(format!("Open tab {title}"))
-                    .cursor_pointer()
-                    .h_full()
-                    .max_w(px(220.))
-                    .px_3()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_1()
-                    .border_r_1()
-                    .border_color(theme::border_light())
-                    .when(*active, |tab| {
-                        tab.bg(theme::panel()).text_color(theme::text())
-                    })
-                    .when(!*active, |tab| {
-                        tab.text_color(theme::text_muted())
-                            .hover(|row| row.bg(theme::raised()))
-                    })
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.activate_tab(index, window, cx);
-                    }))
-                    .child(
+                shell::strip_tab(
+                    SharedString::from(format!("note-tab-{index}")),
+                    title.clone(),
+                    *active,
+                    theme::panel(),
+                )
+                .debug_selector(move || format!("note-tab-{index}"))
+                .flex_shrink_0()
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.activate_tab(index, window, cx);
+                }))
+                .on_mouse_down(
+                    MouseButton::Middle,
+                    cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.close_tab(index, window, cx);
+                    }),
+                )
+                .child(div().min_w_0().truncate().child(title.clone()))
+                .when(*dirty, |tab| {
+                    tab.child(
                         div()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(px(theme::font_row_meta()))
-                            .child(title.clone()),
-                    )
-                    .when(*dirty, |tab| {
-                        tab.child(
-                            div()
-                                .flex_shrink_0()
-                                .size(px(6.))
-                                .rounded_full()
-                                .bg(theme::CHANGES),
-                        )
-                    })
-                    .child(
-                        div()
-                            .id(("note-tab-close", index as u64))
-                            .debug_selector(move || format!("note-tab-close-{index}"))
-                            .a11y_button("Close tab")
-                            .cursor_pointer()
                             .flex_shrink_0()
-                            .rounded(px(4.))
-                            .p_0p5()
-                            .hover(|close| close.bg(theme::raised()))
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.close_tab(index, window, cx);
-                            }))
-                            .child(icon(
-                                "icons/icon-close.svg",
-                                px(theme::icon_tiny() - 2.),
-                                theme::text_faint(),
-                            )),
-                    ),
+                            .size(px(6.))
+                            .rounded_full()
+                            .bg(theme::CHANGES),
+                    )
+                })
+                .child(
+                    div()
+                        .id(("note-tab-close", index as u64))
+                        .debug_selector(move || format!("note-tab-close-{index}"))
+                        .a11y_button("Close tab")
+                        .cursor_pointer()
+                        .flex_shrink_0()
+                        .rounded(px(4.))
+                        .p_0p5()
+                        .hover(|close| close.bg(theme::raised()))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.close_tab(index, window, cx);
+                        }))
+                        .child(icon(
+                            "icons/icon-close.svg",
+                            px(theme::icon_tiny() - 2.),
+                            theme::text_faint(),
+                        )),
+                ),
             );
         }
         strip = strip.child(
@@ -3253,19 +3311,35 @@ impl NotesPage {
             div()
                 .id(id)
                 .debug_selector(move || id.into())
-                .a11y_button(label)
+                .a11y_tab(label, active)
+                .relative()
                 .cursor_pointer()
-                .rounded(px(4.))
+                .h(px(theme::scaled(32.)))
                 .px_2()
-                .py_0p5()
-                .text_size(px(theme::font_meta()))
+                .flex()
+                .items_center()
+                .text_size(px(theme::font_row_meta()))
                 .when(active, |button| {
-                    button.bg(theme::raised()).text_color(theme::text())
+                    button
+                        .text_color(theme::text())
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(
+                            div()
+                                .absolute()
+                                .bottom_0()
+                                .left_0()
+                                .right_0()
+                                .h(px(2.))
+                                .child(motion::grow_mark(
+                                    SharedString::from(format!("context-tab-mark-{id}")),
+                                    theme::accent(),
+                                )),
+                        )
                 })
                 .when(!active, |button| {
                     button
-                        .text_color(theme::text_muted())
-                        .hover(|button| button.bg(theme::raised()))
+                        .text_color(theme::text_dim())
+                        .hover(|button| button.text_color(theme::text()))
                 })
                 .child(label)
         };
@@ -3275,7 +3349,7 @@ impl NotesPage {
             .items_center()
             .gap_1()
             .px_2()
-            .py_2()
+            .h(px(theme::scaled(36.)))
             .border_b_1()
             .border_color(theme::hairline());
         for tab in [ContextTab::Outline, ContextTab::Links] {
@@ -3456,10 +3530,8 @@ impl NotesPage {
     }
 
     /// Everything right of the rail: the list and the editor (or Settings).
-    /// Everything right of the rail: the list and the editor (or Settings).
     fn render_body(
         &mut self,
-        note_title: String,
         dirty: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -3473,6 +3545,35 @@ impl NotesPage {
                         .child(self.render_tree(window, cx))
                         .child(self.render_splitter(cx));
                 }
+                // the head spans the pane; the text keeps its reading measure
+                let head = self
+                    .open_note
+                    .is_some()
+                    .then(|| self.render_editor_head(dirty, cx));
+                let body = div()
+                    .id("notes-editor-body")
+                    .debug_selector(|| "notes-editor-body".into())
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .max_w(px(theme::scaled(shell::READING_WIDTH)))
+                    .mx_auto()
+                    .flex()
+                    .flex_col()
+                    .when(self.open_note.is_some() && self.conflict, |column| {
+                        column.child(self.render_conflict_bar(cx))
+                    })
+                    .when(self.find_open, |column| {
+                        column.child(self.render_find_bar(window, cx))
+                    })
+                    .child(self.render_editor(cx))
+                    .when(self.open_note.is_some(), |column| {
+                        column.child(self.render_status_bar(cx))
+                    });
+                let body_key = SharedString::from(match self.open_note.as_ref() {
+                    Some(path) => format!("note-body-{}", path.display()),
+                    None => "note-body-empty".to_string(),
+                });
                 let mut detail = div()
                     .id("notes-detail")
                     .debug_selector(|| "notes-detail".into())
@@ -3495,35 +3596,18 @@ impl NotesPage {
                             .flex()
                             .flex_col()
                             .min_h_0()
-                            .when(!self.context_open, |column| {
-                                column
-                                    .max_w(px(theme::scaled(shell::READING_WIDTH)))
-                                    .mx_auto()
-                            })
-                            .when(!self.open_tabs.is_empty(), |column| {
-                                column.child(self.render_tab_strip(cx))
-                            })
-                            .when(self.open_note.is_some(), |column| {
-                                // the head is the open file's name; with
-                                // nothing open the empty state speaks
-                                column.child(self.render_editor_head(note_title, dirty, cx))
-                            })
-                            .when(self.open_note.is_some() && self.conflict, |column| {
-                                column.child(self.render_conflict_bar(cx))
-                            })
-                            .when(self.find_open, |column| {
-                                column.child(self.render_find_bar(window, cx))
-                            })
-                            .child(self.render_editor(cx))
-                            .when(self.open_note.is_some(), |column| {
-                                column.child(self.render_status_bar(cx))
-                            }),
+                            .children(head)
+                            .child(motion::enter(body_key, body)),
                     );
                 if self.context_open {
                     detail = detail.child(self.render_context_panel(window, cx));
                 }
-                panes
-                    .child(shell::detail_pane().child(detail))
+                let panes = panes.child(shell::detail_pane().child(detail));
+                // titlebar, then the strip over the whole stage, then the two
+                // panes — station's stack
+                shell::stage()
+                    .child(self.render_tab_strip(cx))
+                    .child(panes)
                     .into_any_element()
             }
         }
@@ -3732,7 +3816,7 @@ impl NotesPage {
         let path = menu.path.clone();
         let is_folder = menu.is_folder;
         let pinned = self.is_pinned(&path);
-        let card = div()
+        let card = warpui_kit_core::controls::popover_card()
             .id("notes-row-menu")
             .debug_selector(|| "notes-row-menu".into())
             .absolute()
@@ -3740,12 +3824,6 @@ impl NotesPage {
             .top(px(y))
             .w(px(theme::MENU_WIDTH))
             .occlude()
-            .rounded(px(8.))
-            .border_1()
-            .border_color(theme::line_strong())
-            .bg(theme::overlay())
-            .shadow_lg()
-            .p_1()
             .flex()
             .flex_col()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -5244,85 +5322,23 @@ impl NotesPage {
     /// bar's popup — so the list keeps its scroll and selection while typing.
     fn render_tree(&mut self, window: &Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let can_create = self.notes_scope.is_some() || !self.tree.is_empty();
+        let (notes_count, pinned_count) = self.list_counts();
         let tree_focus = self.tree_focus.clone();
-        let mut tree = shell::list_pane(self.prefs.list_width)
+        let tree = shell::list_pane(self.prefs.list_width)
             .id("notes-sidebar")
             .debug_selector(|| "notes-sidebar".into())
             .track_focus(&tree_focus)
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 this.handle_tree_key(event, window, cx);
             }))
-            // the head: the list's title, then the two tree tools, exactly the
-            // shell's list-head shape
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_1()
-                    .px_4()
-                    .pt_3p5()
-                    .pb_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(px(theme::font_list_title()))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme::text())
-                            .child("Notes"),
-                    )
-                    .when(can_create, |row| {
-                        row.child(
-                            div()
-                                .id("note-new")
-                                .a11y_toggle("New note", self.create_open)
-                                .cursor_pointer()
-                                .rounded(px(6.))
-                                .size(px(theme::scaled(26.)))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .hover(|s| s.bg(theme::raised()))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.create_open = !this.create_open;
-                                    cx.notify();
-                                }))
-                                .child(icon(
-                                    "icons/icon-plus.svg",
-                                    px(theme::icon_small() - 1.),
-                                    theme::text_muted(),
-                                )),
-                        )
-                    })
-                    .child(
-                        div()
-                            .id("notes-collapse-all")
-                            .debug_selector(|| "notes-collapse-all".into())
-                            .a11y_button("Collapse all folders")
-                            .cursor_pointer()
-                            .rounded(px(6.))
-                            .size(px(theme::scaled(26.)))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .hover(|s| s.bg(theme::raised()))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.expanded.clear();
-                                cx.notify();
-                            }))
-                            .child(icon(
-                                "icons/icon-list-bullet.svg",
-                                px(theme::icon_small() - 1.),
-                                theme::text_muted(),
-                            )),
-                    ),
-            )
+            // the head: the live counts, the list's tools, then the scope
+            .child(self.render_list_head(notes_count, pinned_count, can_create, cx))
             // inline "new note" form, stacked for the narrow column
             .when(self.create_open, |card| {
                 card.child(
                     div()
                         .id("note-create-form")
+                        .debug_selector(|| "note-create-form".into())
                         .flex()
                         .flex_col()
                         .gap_1()
@@ -5390,104 +5406,217 @@ impl NotesPage {
                 )
             });
 
-        if let Some(pinned) = self.render_pinned(cx) {
-            tree = tree.child(pinned);
-        }
-        tree = tree.child(self.render_tree_list(cx));
-        tree.into_any_element()
+        let (list, key) = match self.list_scope {
+            ListScope::All => (self.render_tree_list(cx), "notes-list-all"),
+            ListScope::Pinned => (self.render_pinned_list(cx), "notes-list-pinned"),
+        };
+        let list = div()
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .flex()
+            .flex_col()
+            .child(list);
+        tree.child(motion::enter(key, list)).into_any_element()
     }
 
-    fn render_pinned(&mut self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    /// The list head: the live counts over the list's tools, then the scope —
+    /// Warp Station's list-head shape.
+    fn render_list_head(
+        &mut self,
+        notes: usize,
+        pinned: usize,
+        can_create: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let page = cx.entity();
+        let choices = vec![
+            warpui_kit_core::settings::Choice::new(
+                "all",
+                format!("All {notes}"),
+                self.list_scope == ListScope::All,
+            ),
+            warpui_kit_core::settings::Choice::new(
+                "pinned",
+                format!("Pinned {pinned}"),
+                self.list_scope == ListScope::Pinned,
+            ),
+        ];
+        div()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .gap_2p5()
+            .px_4()
+            .pt_3p5()
+            .pb_2()
+            .border_b_1()
+            .border_color(theme::hairline())
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .min_h(px(theme::scaled(30.)))
+                    .child(
+                        div()
+                            .id("notes-list-summary")
+                            .debug_selector(|| "notes-list-summary".into())
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .text_size(px(theme::font_sub()))
+                            .text_color(theme::text_muted())
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme::text())
+                                    .child(format!("{notes} {}", note_word(notes))),
+                            )
+                            .child(format!(" · {pinned} pinned")),
+                    )
+                    .when(can_create, |row| {
+                        row.child(
+                            div()
+                                .id("note-new")
+                                .a11y_toggle("New note", self.create_open)
+                                .cursor_pointer()
+                                .rounded(px(6.))
+                                .size(px(theme::scaled(26.)))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .hover(|s| s.bg(theme::raised()))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.create_open = !this.create_open;
+                                    cx.notify();
+                                }))
+                                .child(icon(
+                                    "icons/icon-plus.svg",
+                                    px(theme::icon_small() - 1.),
+                                    theme::text_muted(),
+                                )),
+                        )
+                    })
+                    .child(
+                        div()
+                            .id("notes-collapse-all")
+                            .debug_selector(|| "notes-collapse-all".into())
+                            .a11y_button("Collapse all folders")
+                            .cursor_pointer()
+                            .rounded(px(6.))
+                            .size(px(theme::scaled(26.)))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .hover(|s| s.bg(theme::raised()))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.expanded.clear();
+                                cx.notify();
+                            }))
+                            .child(icon(
+                                "icons/icon-list-bullet.svg",
+                                px(theme::icon_small() - 1.),
+                                theme::text_muted(),
+                            )),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .child(warpui_kit_core::settings::segmented(
+                        "notes-list-scope",
+                        choices,
+                        move |key, _, cx| {
+                            let scope = if key.as_ref() == "pinned" {
+                                ListScope::Pinned
+                            } else {
+                                ListScope::All
+                            };
+                            page.update(cx, |this, cx| this.set_list_scope(scope, cx));
+                        },
+                    )),
+            )
+            .into_any_element()
+    }
+
+    /// The pinned scope: the same rows as the tree, flat, newest pin first.
+    fn render_pinned_list(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let pinned = self.pinned_paths();
+        if pinned.is_empty() {
+            return div()
+                .id("notes-pinned-empty")
+                .debug_selector(|| "notes-pinned-empty".into())
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(px(theme::font_meta()))
+                .text_color(theme::text_muted())
+                .child("No pinned notes yet")
+                .into_any_element();
+        }
+        let editor_text = self.editor.read(cx).value();
+        let mut list = div()
+            .id("notes-pinned-list")
+            .debug_selector(|| "notes-pinned-list".into())
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col();
+        let mut shown = 0usize;
+        for path in &pinned {
+            if let Some(item) = self.tree_item_for(path) {
+                list = list.child(self.render_tree_row(&item, 0, shown, editor_text.as_ref(), cx));
+                shown += 1;
+            }
+        }
+        list.into_any_element()
+    }
+
+    /// What the head prints: "7 notes · 2 pinned".
+    fn summary_text(&self) -> String {
+        let (notes, pinned) = self.list_counts();
+        format!("{notes} {} · {pinned} pinned", note_word(notes))
+    }
+
+    /// The list's live counts: every note in the tree, and the pins in scope.
+    fn list_counts(&self) -> (usize, usize) {
+        let mut notes = Vec::new();
+        collect_note_paths(&self.tree, &mut notes);
+        (notes.len(), self.pinned_paths().len())
+    }
+
+    /// The pinned notes in the current tree scope, in pin order.
+    fn pinned_paths(&self) -> Vec<PathBuf> {
         let scope = self.notes_root();
-        let pinned: Vec<PathBuf> = self
-            .prefs
+        self.prefs
             .pinned
             .iter()
             .map(|relative| self.store_root.join(relative))
             .filter(|path| path.is_file())
             .filter(|path| scope.as_ref().is_none_or(|scope| path.starts_with(scope)))
-            .collect();
-        if pinned.is_empty() {
-            return None;
+            .collect()
+    }
+
+    /// Switch the list's scope; the tree cursor belonged to the old list.
+    fn set_list_scope(&mut self, scope: ListScope, cx: &mut Context<Self>) {
+        if self.list_scope == scope {
+            return;
         }
-        let mut section = div()
-            .id("notes-pinned")
-            .debug_selector(|| "notes-pinned".into())
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .px_2()
-            .pt_2()
-            .child(
-                div()
-                    .px_2()
-                    .pb_1()
-                    .text_size(px(theme::font_micro()))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme::text_faint())
-                    .child("PINNED"),
-            );
-        for (index, path) in pinned.iter().enumerate() {
-            let title = path
-                .file_stem()
-                .map(|name| name.to_string_lossy().to_string())
-                .unwrap_or_else(|| path.to_string_lossy().to_string());
-            let selector = title.clone();
-            let open = path.clone();
-            let toggle = path.clone();
-            section = section.child(
-                div()
-                    .id(("pinned-item", index as u64))
-                    .debug_selector(move || format!("pinned-item-{}", selector))
-                    .a11y_button(format!("Open pinned note {title}"))
-                    .cursor_pointer()
-                    .rounded(px(6.))
-                    .h(px(theme::scaled(TREE_ROW_HEIGHT) - 4.))
-                    .px_2()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_1()
-                    .hover(|row| row.bg(theme::raised()))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_note(open.clone(), window, cx);
-                    }))
-                    .child(icon(
-                        "icons/icon-star-filled.svg",
-                        px(theme::icon_tiny()),
-                        theme::text_muted(),
-                    ))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(px(theme::font_row_meta()))
-                            .text_color(theme::text_dim())
-                            .child(title),
-                    )
-                    .child(
-                        div()
-                            .id(("pinned-star", index as u64))
-                            .debug_selector(move || format!("pinned-star-{index}"))
-                            .a11y_button("Unpin note")
-                            .cursor_pointer()
-                            .rounded(px(4.))
-                            .p_0p5()
-                            .hover(|star| star.bg(theme::panel()))
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.toggle_pin(&toggle, cx);
-                            }))
-                            .child(icon(
-                                "icons/icon-star.svg",
-                                px(theme::icon_tiny()),
-                                theme::text_faint(),
-                            )),
-                    ),
-            );
-        }
-        Some(section.into_any_element())
+        self.list_scope = scope;
+        self.tree_cursor = None;
+        cx.notify();
     }
 
     /// The search results, as the design's popup under the title bar field.
@@ -5769,6 +5898,11 @@ impl NotesPage {
             cx.stop_propagation();
             return;
         }
+        // the pinned scope is a flat list with no cursor: the tree's keys would
+        // move a selection the user cannot see
+        if self.list_scope == ListScope::Pinned {
+            return;
+        }
         if event.keystroke.modifiers.control && key == "d" {
             if let Some(path) = self.tree_cursor.clone() {
                 self.duplicate_path(path, window, cx);
@@ -5818,45 +5952,44 @@ impl NotesPage {
         editor_text: &str,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        if item.is_folder {
+            self.render_folder_band(item, depth, index, cx)
+        } else {
+            self.render_note_row(item, depth, index, editor_text, cx)
+        }
+    }
+
+    /// A folder's band: chevron, glyph, quiet name, then how many notes it
+    /// holds — the tree's version of station's group band.
+    fn render_folder_band(
+        &mut self,
+        item: &notes_core::NotesTreeItem,
+        depth: usize,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
         let expanded = self.expanded.contains(&item.full_path);
-        let selected = self.open_note.as_ref() == Some(&item.full_path);
         let cursor = self.tree_cursor.as_ref() == Some(&item.full_path);
-        let unsaved = self.dirty.contains_key(&item.full_path)
-            || (selected && !item.is_folder && editor_text != self.saved_text.as_str());
         let id = gpui::ElementId::NamedInteger(
             SharedString::from(format!("note-item-{}-{}", depth, item.name)),
             index as u64,
         );
         let selector_name = item.name.clone();
-        let action_selector = format!("note-actions-{}", item.name);
+        let actions = self.row_actions(item, index, cx);
         div()
             .id(id)
             .debug_selector(move || format!("note-item-{}", selector_name))
-            .a11y_tree_item(item.name.clone(), item.is_folder.then_some(expanded))
-            .relative()
+            .a11y_tree_item(item.name.clone(), Some(expanded))
             .cursor_pointer()
             .flex()
             .items_center()
+            .gap_1p5()
+            .w_full()
             .h(px(theme::scaled(TREE_ROW_HEIGHT)))
             .pl(px(10. + depth as f32 * 14.))
             .pr_3()
-            .text_size(px(theme::font_row_meta()))
-            .when(selected, |d| {
-                d.bg(theme::raised()).text_color(theme::text()).child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .left_0()
-                        .w(px(3.))
-                        .bg(theme::accent()),
-                )
-            })
-            .when(!selected, |d| d.text_color(theme::text_dim()))
-            .when(!selected, |d| d.hover(|s| s.bg(theme::panel())))
-            .when(cursor && !selected, |d| {
-                d.bg(theme::raised()).text_color(theme::text())
-            })
+            .when(cursor, |d| d.bg(theme::raised()))
+            .hover(|s| s.bg(theme::panel()))
             .on_mouse_down(MouseButton::Right, {
                 let path = item.full_path.clone();
                 let is_folder = item.is_folder;
@@ -5870,58 +6003,136 @@ impl NotesPage {
                 cx.listener(move |this, _, window, cx| {
                     this.tree_cursor = Some(item.full_path.clone());
                     window.focus(&this.tree_focus, cx);
-                    if item.is_folder {
-                        if this.expanded.contains(&item.full_path) {
-                            this.expanded.remove(&item.full_path);
-                        } else {
-                            this.expanded.insert(item.full_path.clone());
-                        }
-                        this.remember_expanded();
+                    if this.expanded.contains(&item.full_path) {
+                        this.expanded.remove(&item.full_path);
                     } else {
-                        this.open_note(item.full_path.clone(), window, cx);
+                        this.expanded.insert(item.full_path.clone());
                     }
+                    this.remember_expanded();
                     cx.notify();
                 })
             })
+            .child(icon(
+                if expanded {
+                    "icons/icon-chevron-down.svg"
+                } else {
+                    "icons/icon-chevron-right.svg"
+                },
+                px(theme::icon_tiny()),
+                theme::text_faint(),
+            ))
+            .child(icon(
+                "icons/icon-folder.svg",
+                px(theme::icon_tiny()),
+                theme::text_muted(),
+            ))
             .child(
                 div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_1()
-                    .min_w_0()
                     .flex_1()
-                    .when(item.is_folder, |row| {
-                        row.child(icon(
-                            if expanded {
-                                "icons/icon-chevron-down.svg"
-                            } else {
-                                "icons/icon-chevron-right.svg"
-                            },
-                            px(theme::icon_tiny()),
-                            theme::text_faint(),
-                        ))
-                    })
-                    .child(if item.is_folder {
-                        icon(
-                            "icons/icon-folder.svg",
-                            px(theme::icon_tiny()),
-                            theme::text_muted(),
-                        )
-                    } else {
-                        icon(
-                            "icons/icon-note.svg",
-                            px(theme::icon_tiny()),
-                            theme::text_muted(),
-                        )
-                    })
-                    .child(div().truncate().min_w_0().child(item.name.clone())),
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(theme::font_sub()))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme::text_dim())
+                    .child(item.name.clone()),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_size(px(theme::font_mono_meta()))
+                    .text_color(theme::text_muted())
+                    .child(note_count(item).to_string()),
+            )
+            .child(actions)
+            .into_any_element()
+    }
+
+    /// A note's row: the name at name size, its age on the right, the pin when
+    /// it has one, and the row's verb — a full-width band.
+    fn render_note_row(
+        &mut self,
+        item: &notes_core::NotesTreeItem,
+        depth: usize,
+        index: usize,
+        editor_text: &str,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let selected = self.open_note.as_ref() == Some(&item.full_path);
+        let cursor = self.tree_cursor.as_ref() == Some(&item.full_path);
+        let pinned = self.is_pinned(&item.full_path);
+        let unsaved = self.dirty.contains_key(&item.full_path)
+            || (selected && editor_text != self.saved_text.as_str());
+        let age = age_label(item.modified);
+        let id = gpui::ElementId::NamedInteger(
+            SharedString::from(format!("note-item-{}-{}", depth, item.name)),
+            index as u64,
+        );
+        let selector_name = item.name.clone();
+        let pin_selector = format!("note-pin-{}", item.name);
+        let pin_path = item.full_path.clone();
+        let actions = self.row_actions(item, index, cx);
+        div()
+            .id(id)
+            .debug_selector(move || format!("note-item-{}", selector_name))
+            .a11y_tree_item(item.name.clone(), None)
+            .relative()
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .gap_1p5()
+            .w_full()
+            .h(px(theme::scaled(TREE_ROW_HEIGHT)))
+            .pl(px(10. + depth as f32 * 14.))
+            .pr_3()
+            .when(selected, |d| {
+                d.bg(theme::raised()).child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left_0()
+                        .w(px(3.))
+                        .bg(theme::accent()),
+                )
+            })
+            .when(!selected, |d| d.hover(|s| s.bg(theme::panel())))
+            .when(cursor && !selected, |d| d.bg(theme::raised()))
+            .on_mouse_down(MouseButton::Right, {
+                let path = item.full_path.clone();
+                let is_folder = item.is_folder;
+                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                    this.open_row_menu(path.clone(), is_folder, event.position, cx);
+                    cx.stop_propagation();
+                })
+            })
+            .on_click({
+                let item = item.clone();
+                cx.listener(move |this, _, window, cx| {
+                    this.tree_cursor = Some(item.full_path.clone());
+                    window.focus(&this.tree_focus, cx);
+                    this.open_note(item.full_path.clone(), window, cx);
+                    cx.notify();
+                })
+            })
+            .child(icon(
+                "icons/icon-note.svg",
+                px(theme::icon_tiny()),
+                theme::text_muted(),
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(theme::font_name()))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme::text())
+                    .child(item.name.clone()),
             )
             .when(unsaved, |row| {
                 row.child(
                     div()
                         .flex_shrink_0()
-                        .ml_1()
                         .size(px(6.))
                         .rounded_full()
                         .bg(theme::CHANGES),
@@ -5929,30 +6140,69 @@ impl NotesPage {
             })
             .child(
                 div()
-                    .id(("note-actions", index as u64))
-                    .debug_selector(move || action_selector.clone())
-                    .a11y_button("Note actions")
-                    .cursor_pointer()
                     .flex_shrink_0()
-                    .ml_1()
-                    .rounded(px(6.))
-                    .p_0p5()
-                    .opacity(0.6)
-                    .hover(|style| style.bg(theme::raised()).opacity(1.))
-                    .on_mouse_down(MouseButton::Left, {
-                        let path = item.full_path.clone();
-                        let is_folder = item.is_folder;
-                        cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
-                            this.open_row_menu(path.clone(), is_folder, event.position, cx);
-                            cx.stop_propagation();
-                        })
-                    })
-                    .child(icon(
-                        "icons/icon-more.svg",
-                        px(theme::icon_small() - 2.),
-                        theme::text_faint(),
-                    )),
+                    .text_size(px(theme::font_mono_meta()))
+                    .text_color(theme::text_muted())
+                    .child(age),
             )
+            .when(pinned, |row| {
+                row.child(
+                    div()
+                        .id(("note-pin", index as u64))
+                        .debug_selector(move || pin_selector.clone())
+                        .a11y_button("Unpin note")
+                        .cursor_pointer()
+                        .flex_shrink_0()
+                        .rounded(px(4.))
+                        .p_0p5()
+                        .hover(|s| s.bg(theme::panel()))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.toggle_pin(&pin_path, cx);
+                        }))
+                        .child(icon(
+                            "icons/icon-star-filled.svg",
+                            px(theme::icon_tiny()),
+                            theme::accent_ink(),
+                        )),
+                )
+            })
+            .child(actions)
+            .into_any_element()
+    }
+
+    /// The row's trailing verb: the row menu, quiet until hovered.
+    fn row_actions(
+        &self,
+        item: &notes_core::NotesTreeItem,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let action_selector = format!("note-actions-{}", item.name);
+        div()
+            .id(("note-actions", index as u64))
+            .debug_selector(move || action_selector.clone())
+            .a11y_button("Note actions")
+            .cursor_pointer()
+            .flex_shrink_0()
+            .ml_1()
+            .rounded(px(6.))
+            .p_0p5()
+            .opacity(0.55)
+            .hover(|style| style.bg(theme::raised()).opacity(1.))
+            .on_mouse_down(MouseButton::Left, {
+                let path = item.full_path.clone();
+                let is_folder = item.is_folder;
+                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                    this.open_row_menu(path.clone(), is_folder, event.position, cx);
+                    cx.stop_propagation();
+                })
+            })
+            .child(icon(
+                "icons/icon-more.svg",
+                px(theme::icon_small() - 2.),
+                theme::text_faint(),
+            ))
             .into_any_element()
     }
 
@@ -5998,12 +6248,9 @@ impl NotesPage {
 
     /// The editor's head: the file name in mono, the unsaved mark, Save, and
     /// Move to Trash, over the format bar.
-    fn render_editor_head(
-        &mut self,
-        note_title: String,
-        dirty: bool,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
+    /// The editor's head: the note's identity, its facts, then the tools —
+    /// Warp Station's detail head.
+    fn render_editor_head(&mut self, dirty: bool, cx: &mut Context<Self>) -> gpui::AnyElement {
         // formatting row: fourteen buttons in four groups — text styles and
         // links; headings; lists and quote; block inserts. Icon buttons where
         // the asset set has a glyph and short text labels for the rest.
@@ -6061,38 +6308,85 @@ impl NotesPage {
             formats = formats.child(button);
         }
 
+        let title = self
+            .open_note
+            .as_ref()
+            .and_then(|path| path.file_stem())
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Untitled".into());
+        let pin_path = self.open_note.clone();
+        let pinned = pin_path.as_deref().is_some_and(|path| self.is_pinned(path));
+        let toggle_path = pin_path.clone();
+        let verbs_path = pin_path.clone();
+
         div()
             .id("notes-toolbar")
             .debug_selector(|| "notes-toolbar".into())
             .flex()
             .flex_col()
-            .pt_3p5()
-            .px_4()
+            .flex_shrink_0()
+            .pt_4()
+            .px(px(theme::scaled(shell::DETAIL_PADDING)))
             .pb_2()
             .border_b_1()
-            .border_color(theme::border_light())
+            .border_color(theme::hairline())
             .child(
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap_2()
-                    .pb_2()
-                    // the file name, mono like the path it is
+                    .gap(px(theme::scaled(10.)))
+                    .min_h(px(theme::scaled(36.)))
                     .child(
                         div()
+                            .id("note-pin-toggle")
+                            .debug_selector(|| "note-pin-toggle".into())
+                            .a11y_toggle(if pinned { "Unpin note" } else { "Pin note" }, pinned)
+                            .cursor_pointer()
+                            .flex_shrink_0()
+                            .size(px(theme::scaled(24.)))
+                            .rounded(px(4.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .hover(|d| d.bg(theme::raised()))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(path) = toggle_path.clone() {
+                                    this.toggle_pin(&path, cx);
+                                }
+                            }))
+                            .child(icon(
+                                if pinned {
+                                    "icons/icon-star-filled.svg"
+                                } else {
+                                    "icons/icon-star.svg"
+                                },
+                                px(theme::icon_medium()),
+                                if pinned {
+                                    theme::accent_ink()
+                                } else {
+                                    theme::text_muted()
+                                },
+                            )),
+                    )
+                    .child(
+                        div()
+                            .id("note-title")
+                            .debug_selector(|| "note-title".into())
+                            .flex_1()
                             .min_w_0()
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_ellipsis()
-                            .font_family(SharedString::from(theme::code_font()))
-                            .text_size(px(theme::font_mono_meta()))
-                            .text_color(theme::text_dim())
-                            .child(note_title.clone()),
+                            .text_size(px(theme::font_screen_title()))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme::text())
+                            .child(title),
                     )
                     .when(self.conflict, |row| {
                         row.child(
                             div()
+                                .flex_shrink_0()
                                 .text_size(px(theme::font_meta()))
                                 .text_color(theme::DANGER)
                                 .child("● changed on disk"),
@@ -6101,57 +6395,43 @@ impl NotesPage {
                     .when(dirty && !self.conflict, |row| {
                         row.child(
                             div()
+                                .flex_shrink_0()
                                 .text_size(px(theme::font_meta()))
                                 .text_color(theme::CHANGES)
                                 .child("● unsaved"),
                         )
                     })
-                    .child(div().flex_1())
-                    .when(self.open_note.is_some(), |row| {
-                        row.child(
-                            div()
-                                .id("note-trash")
-                                .debug_selector(|| "note-trash".into())
-                                .a11y_button("Move note to Trash")
-                                .cursor_pointer()
-                                .rounded(px(6.))
-                                .h(px(theme::scaled(shell::CONTROL_HEIGHT) - 8.))
-                                .px_3()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .gap_1p5()
-                                .text_size(px(theme::font_control()))
-                                .text_color(theme::text_faint())
-                                .hover(|s| s.bg(theme::raised()))
-                                .on_click(
-                                    cx.listener(|this, _, window, cx| {
-                                        this.trash_current(window, cx)
-                                    }),
-                                )
-                                .child(icon(
-                                    "icons/icon-trash.svg",
-                                    px(theme::icon_small() - 2.),
-                                    theme::text_faint(),
-                                ))
-                                .child("Trash"),
-                        )
-                    }),
+                    .child(
+                        warpui_kit_core::controls::icon_button("note-verbs", "Note menu")
+                            .debug_selector(|| "note-verbs".into())
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                                    if let Some(path) = verbs_path.clone() {
+                                        this.open_row_menu(path, false, event.position, cx);
+                                    }
+                                    cx.stop_propagation();
+                                }),
+                            )
+                            .child(icon(
+                                "icons/icon-more.svg",
+                                px(theme::icon_small()),
+                                theme::text_dim(),
+                            )),
+                    ),
             )
             .when_some(self.open_note.clone(), |toolbar, path| {
+                let age = edited_age(&path, &mut self.age_cache);
                 toolbar.child(
                     div()
+                        .mt_1()
                         .flex()
                         .flex_row()
+                        .flex_wrap()
                         .items_center()
-                        .gap_2()
-                        .pb_1()
-                        // the store-relative path shrinks (ellipsized) so a
-                        // deep note never widens the pane past the window
-                        .min_w_0()
-                        .overflow_hidden()
+                        .gap(px(theme::scaled(14.)))
                         .text_size(px(theme::font_meta()))
-                        .text_color(theme::text_faint())
+                        .text_color(theme::text_dim())
                         .child(
                             div()
                                 .min_w_0()
@@ -6159,17 +6439,14 @@ impl NotesPage {
                                 .whitespace_nowrap()
                                 .text_ellipsis()
                                 .font_family(SharedString::from(theme::code_font()))
+                                .text_size(px(theme::font_mono_meta()))
                                 .max_w(px(theme::scaled(theme::NOTE_PATH_MAX_W)))
                                 .child(compact_path(&self.store_root, &path)),
                         )
-                        .child(div().flex_1())
-                        .child({
-                            let age = edited_age(&path, &mut self.age_cache);
-                            format!("Edited {age}")
-                        }),
+                        .child(format!("Edited {age}")),
                 )
             })
-            .when(self.open_note.is_some(), |toolbar| toolbar.child(formats))
+            .child(formats)
             .into_any_element()
     }
 
@@ -6188,6 +6465,7 @@ impl NotesPage {
             let can_create = self.notes_scope.is_some() || !self.tree.is_empty();
             return div()
                 .id("notes-empty")
+                .debug_selector(|| "notes-empty".into())
                 .flex_1()
                 .flex()
                 .flex_col()
@@ -6215,6 +6493,7 @@ impl NotesPage {
                     column.child(
                         div()
                             .id("notes-empty-new")
+                            .debug_selector(|| "notes-empty-new".into())
                             .a11y_button("New note")
                             .cursor_pointer()
                             .rounded(px(6.))

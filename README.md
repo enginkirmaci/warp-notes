@@ -11,12 +11,21 @@ from DevTools into its own repo. Rust/GPUI (gpui-kit 0.9), one crate.
   (a `--store` launch, including Warp Station's, wins); an older store kept in
   `~/.warp/notes` (or the even older `~/.devtools/notes`) moves there on first
   run.
-- The family shell: a rail (Notes, Settings), the note tree in the list pane and
-  one live editor in the detail pane; Settings holds the store path (editable
-  when the window was not launched with `--store`), the shared text size, the
-  live palette and reduce motion (the list width and
+- The family shell, Warp Station's stack: a rail (Notes, Settings), the strip
+  under the titlebar (a Notes tab for the list, then one per open note), the
+  tree in the list pane and one live editor in the detail pane. Settings holds
+  the store path (editable when the window was not launched with `--store`),
+  the shared text size, the live palette and reduce motion (the list width and
   the motion choice persist in the versioned snake_case
   `~/.warp/notes/settings.json`).
+- The list head reads the store: "N notes · M pinned" with the new-note and
+  collapse controls, then an `All` / `Pinned` scope. The tree's folders are
+  bands with their note counts; note rows carry the name at name size, the
+  edited age, the pin and the row menu.
+- The note head is the note's identity: the pin, the title at screen-title
+  size, the store-relative path with the edit age, and a `…` menu for rename,
+  move, duplicate, copy path and Trash. The text keeps its 760px measure under
+  a full-width head.
 - Folder/file tree, capped full-text search, dirty-buffer-safe navigation.
   A row's action menu (also on right-click) renames, moves, duplicates,
   creates folders and copies store-relative paths; the tree and the open note
@@ -29,15 +38,16 @@ from DevTools into its own repo. Rust/GPUI (gpui-kit 0.9), one crate.
   title-bar search selects hits with Up/Down/Enter, and `Ctrl+/` opens the
   shortcut sheet.
 - `Ctrl+P` quick open searches every note in the store by title and path;
-  pinned and recent notes come first. The row menu pins/unpins, and a pinned
-  section sits above the tree. Opening a note from another repo drops the
-  current repo pin so the tree can show it.
+  pinned and recent notes come first. The row menu and the note head's star
+  pin/unpin, and the head's `Pinned` scope lists them flat. Opening a note
+  from another repo drops the current repo pin so the tree can show it.
 - The title-bar search is store-wide by default; its popup scope chip narrows
   to the pinned repo. `Ctrl+Shift+F` (or "See all results") opens the full
   result list with highlighted excerpts.
-- Open notes appear in a tab strip: `Ctrl+Enter` in quick open or the row
-  menu's "Open in new tab" adds one, `Ctrl+W` closes, `Ctrl+Tab` cycles, and
-  `Alt+Left`/`Right` (or the titlebar arrows) walk the open history.
+- Open notes appear in the strip under the titlebar: `Ctrl+Enter` in quick
+  open or the row menu's "Open in new tab" adds one, `Ctrl+W` closes,
+  `Ctrl+Tab` cycles, and `Alt+Left`/`Right` (or the titlebar arrows) walk the
+  open history.
 - The right-hand context panel toggles with `Ctrl+Shift+B`: Outline lists the
   current headings and jumps the caret, Backlinks lists the notes that link
   here and opens their source.
