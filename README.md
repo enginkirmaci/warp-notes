@@ -12,7 +12,8 @@ from DevTools into its own repo. Rust/GPUI (gpui-kit 0.7), one crate.
 - The family shell: a rail (Notes, Settings), the note tree in the list pane and
   one live editor in the detail pane; Settings holds the store path, the shared
   text size, the Copper palette and reduce motion (the list width and
-  the motion choice persist in `~/.warp/notes/settings.json`).
+  the motion choice persist in the versioned snake_case
+  `~/.warp/notes/settings.json`).
 - Folder/file tree, capped full-text search, dirty-buffer-safe navigation.
 - A single live editor that works like Obsidian's live preview: markdown
   renders in place while typing with its syntax hidden until the caret touches

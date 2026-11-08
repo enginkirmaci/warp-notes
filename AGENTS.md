@@ -20,7 +20,8 @@ the modules and the binary is a thin bootstrap. The probes build the real
 - `src/ui/notes.rs` — the rail, tree, live editor and find bar.
 - `src/ui/settings.rs` — General and Appearance: store path, shared text size,
   palette and reduce motion.
-- `src/ui_prefs.rs` — the remembered shell in `~/.warp/notes/settings.json`.
+- `src/ui_prefs.rs` — the remembered shell in the versioned snake_case
+  `~/.warp/notes/settings.json`.
 - `src/atomic_write.rs`, `logging.rs`, `assets.rs`, `theme.rs`.
 
 ## Launch contract

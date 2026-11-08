@@ -7,11 +7,14 @@
 //! through. Paths are stored relative to the notes store root, so a store
 //! that moves house does not strand them.
 
-use crate::atomic_write::write_atomically;
 use std::path::PathBuf;
-use warpui_kit_core::shell;
 
-#[derive(Debug, Clone, PartialEq)]
+use serde::{Deserialize, Serialize};
+use warpui_kit_core::shell;
+use warpui_kit_platform::config::Store;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct UiPrefs {
     pub list_width: f32,
     pub reduce_motion: bool,
@@ -53,88 +56,41 @@ fn prefs_path() -> PathBuf {
 
 impl UiPrefs {
     /// Reads the prefs; a missing or unreadable file is simply the defaults,
-    /// and a stored width outside the shell's bounds is clamped on load.
+    /// and a stored width outside the shell's bounds is clamped on load. A
+    /// pre-versioning file is imported once and rewritten with the version.
     pub fn load() -> Self {
-        let text = match std::fs::read_to_string(prefs_path()) {
-            Ok(text) => text,
-            Err(_) => return Self::default(),
-        };
-        let mut prefs = Self::from_json(&text);
-        prefs.list_width = shell::clamp_list_width(prefs.list_width);
-        prefs
+        let path = prefs_path();
+        let store = Store::<UiPrefs>::new(path.clone());
+        match store.load() {
+            Ok(prefs) => prefs.normalized(),
+            Err(err) if err.needs_import() => {
+                let prefs = std::fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|text| serde_json::from_str::<UiPrefs>(&text).ok())
+                    .unwrap_or_default()
+                    .normalized();
+                let _ = store.save(&prefs);
+                prefs
+            }
+            Err(_) => Self::default(),
+        }
     }
 
     pub fn save(&self) {
-        let path = prefs_path();
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Err(err) = write_atomically(&path, &self.to_json()) {
-            tracing::warn!("could not write {}: {err}", path.display());
-        }
+        let _ = Store::<UiPrefs>::new(prefs_path()).save(self);
     }
 
-    fn to_json(&self) -> String {
-        serde_json::json!({
-            "list_width": self.list_width,
-            "reduce_motion": self.reduce_motion,
-            "list_visible": self.list_visible,
-            "section": self.section,
-            "settings_section": self.settings_section,
-            "open_note": self.open_note,
-            "expanded": self.expanded,
-            "notes_scope": self.notes_scope,
-        })
-        .to_string()
-    }
-
-    /// Every field stands alone: an unknown value falls back to that field's
-    /// default, so a hand-edited or half-written file costs nothing.
-    fn from_json(text: &str) -> Self {
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
-            tracing::warn!("could not parse {}", prefs_path().display());
-            return Self::default();
-        };
-        let section = |key: &str, one: &str, other: &str, fallback: &str| -> String {
-            match value.get(key).and_then(|v| v.as_str()) {
-                Some(s) if s == one || s == other => s.to_string(),
-                _ => fallback.to_string(),
-            }
-        };
-        Self {
-            list_width: value
-                .get("list_width")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(shell::LIST_WIDTH as f64) as f32,
-            reduce_motion: value
-                .get("reduce_motion")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            list_visible: value
-                .get("list_visible")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true),
-            section: section("section", "notes", "settings", "notes"),
-            settings_section: section("settings_section", "general", "appearance", "general"),
-            open_note: value
-                .get("open_note")
-                .and_then(|v| v.as_str())
-                .map(str::to_string),
-            expanded: value
-                .get("expanded")
-                .and_then(|v| v.as_array())
-                .map(|list| {
-                    list.iter()
-                        .filter_map(|v| v.as_str())
-                        .map(str::to_string)
-                        .collect()
-                })
-                .unwrap_or_default(),
-            notes_scope: value
-                .get("notes_scope")
-                .and_then(|v| v.as_str())
-                .map(str::to_string),
+    /// Values a hand-edited file may hold that the rest of the app would
+    /// otherwise have to re-check on every use.
+    fn normalized(mut self) -> Self {
+        self.list_width = shell::clamp_list_width(self.list_width);
+        if self.section != "notes" && self.section != "settings" {
+            self.section = "notes".into();
         }
+        if self.settings_section != "general" && self.settings_section != "appearance" {
+            self.settings_section = "general".into();
+        }
+        self
     }
 }
 
@@ -153,6 +109,9 @@ pub fn set_prefs_file_for_probe(path: Option<PathBuf>) {
 mod tests {
     use super::*;
 
+    /// The prefs override is process-global; these tests take turns.
+    static PREFS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// Every field round-trips, and an old file without the newer keys
     /// simply falls back to the defaults for them.
     #[test]
@@ -167,7 +126,8 @@ mod tests {
             expanded: vec!["alpha".into(), "alpha/sub".into()],
             notes_scope: Some("alpha".into()),
         };
-        let parsed = UiPrefs::from_json(&prefs.to_json());
+        let text = serde_json::to_string(&prefs).unwrap();
+        let parsed: UiPrefs = serde_json::from_str(&text).unwrap();
         assert_eq!(parsed.list_width, 500.);
         assert!(parsed.reduce_motion);
         assert!(!parsed.list_visible);
@@ -177,7 +137,7 @@ mod tests {
         assert_eq!(parsed.expanded, vec!["alpha", "alpha/sub"]);
         assert_eq!(parsed.notes_scope.as_deref(), Some("alpha"));
 
-        let legacy = UiPrefs::from_json("{\"list_width\": 400}");
+        let legacy: UiPrefs = serde_json::from_str("{\"list_width\": 400}").unwrap();
         assert_eq!(legacy.list_width, 400.);
         assert!(legacy.list_visible, "missing keys take the defaults");
         assert_eq!(legacy.section, "notes");
@@ -190,6 +150,7 @@ mod tests {
     /// so the developer's own prefs are never touched.
     #[test]
     fn load_defaults_on_garbage_and_clamps_width() {
+        let _turn = PREFS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let dir = std::env::temp_dir().join(format!("warp-notes-prefs-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -204,12 +165,40 @@ mod tests {
             ..UiPrefs::default()
         };
         wide.save();
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["schema_version"], 1);
+        assert_eq!(saved["list_width"], 5000.0);
         let loaded = UiPrefs::load();
         assert_eq!(
             loaded.list_width,
             shell::clamp_list_width(5000.),
             "the saved width is clamped back into the shell's bounds"
         );
+        set_prefs_file_for_probe(None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A pre-versioning file is read, rewritten with `schema_version`, and
+    /// keeps its values.
+    #[test]
+    fn a_legacy_file_is_imported_once() {
+        let _turn = PREFS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!("warp-notes-prefs-old-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"list_width": 400, "section": "settings"}"#).unwrap();
+        set_prefs_file_for_probe(Some(path.clone()));
+
+        let loaded = UiPrefs::load();
+        assert_eq!(loaded.list_width, 400.);
+        assert_eq!(loaded.section, "settings");
+
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["schema_version"], 1);
+        assert_eq!(saved["list_width"], 400.0);
         set_prefs_file_for_probe(None);
         let _ = std::fs::remove_dir_all(&dir);
     }
