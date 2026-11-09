@@ -8,7 +8,8 @@ use warp_notes::ui::notes::{Launch, NotesPage};
 use warp_notes::ui_prefs::set_prefs_file_for_probe;
 
 use gpui::{
-    AppContext, Bounds, Modifiers, Pixels, Point, TestAppContext, VisualTestContext, px, size,
+    AppContext, Bounds, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point,
+    TestAppContext, VisualTestContext, px, size,
 };
 use std::path::PathBuf;
 
@@ -60,6 +61,51 @@ fn click_str(cx: &mut VisualTestContext, selector: &str) {
         y: b.origin.y + b.size.height / 2.,
     };
     cx.simulate_click(center, Modifiers::default());
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+}
+
+/// A double click: the platform's second press and release carry
+/// `click_count: 2`, so both clicks reach the element.
+fn double_click(cx: &mut VisualTestContext, selector: &str) {
+    let selector: &'static str = Box::leak(selector.to_string().into_boxed_str());
+    let b = cx
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} missing from the frame"));
+    let center = Point {
+        x: b.origin.x + b.size.width / 2.,
+        y: b.origin.y + b.size.height / 2.,
+    };
+    for click_count in 1..=2 {
+        cx.simulate_event(MouseDownEvent {
+            position: center,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count,
+            first_mouse: false,
+        });
+        cx.simulate_event(MouseUpEvent {
+            position: center,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count,
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| drop(window.draw(cx)));
+    }
+}
+
+fn middle_click(cx: &mut VisualTestContext, selector: &str) {
+    let selector: &'static str = Box::leak(selector.to_string().into_boxed_str());
+    let b = cx
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} missing from the frame"));
+    let center = Point {
+        x: b.origin.x + b.size.width / 2.,
+        y: b.origin.y + b.size.height / 2.,
+    };
+    cx.simulate_mouse_down(center, MouseButton::Middle, Modifiers::default());
+    cx.simulate_mouse_up(center, MouseButton::Middle, Modifiers::default());
     cx.run_until_parked();
     cx.update(|window, cx| drop(window.draw(cx)));
 }
@@ -2351,6 +2397,112 @@ fn tabs_keep_their_buffers_and_close(cx: &mut TestAppContext) {
     assert!(bounds(cx, "notes-strip-home").is_some());
     assert!(bounds(cx, "note-tab-0").is_none());
     assert_eq!(cx.window_title().as_deref(), Some("Warp Notes"));
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn a_single_click_previews_and_a_double_click_keeps_the_tab(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-preview-tabs");
+    let alpha = home.join("notes/projects/alpha");
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    // one click: a preview tab, and the next click takes its slot over
+    click(cx, "note-item-note.md");
+    assert_eq!(
+        page.read_with(cx, |page, _| page.tab_paths_for_probe()),
+        vec![alpha.join("note.md")]
+    );
+    assert_eq!(
+        page.read_with(cx, |page, _| page.preview_tabs_for_probe()),
+        vec![true]
+    );
+    click(cx, "note-item-task.md");
+    assert_eq!(
+        page.read_with(cx, |page, _| page.tab_paths_for_probe()),
+        vec![alpha.join("task.md")]
+    );
+    assert_eq!(
+        page.read_with(cx, |page, _| page.preview_tabs_for_probe()),
+        vec![true]
+    );
+
+    // a double click in the list keeps the note it lands on
+    double_click(cx, "note-item-list.md");
+    assert_eq!(
+        page.read_with(cx, |page, _| page.tab_paths_for_probe()),
+        vec![alpha.join("list.md")]
+    );
+    assert_eq!(
+        page.read_with(cx, |page, _| page.preview_tabs_for_probe()),
+        vec![false]
+    );
+
+    // the kept tab stays put; the click plants a preview beside it
+    click(cx, "note-item-note.md");
+    assert_eq!(
+        page.read_with(cx, |page, _| page.tab_paths_for_probe()),
+        vec![alpha.join("list.md"), alpha.join("note.md")]
+    );
+    assert_eq!(
+        page.read_with(cx, |page, _| page.preview_tabs_for_probe()),
+        vec![false, true]
+    );
+    assert_eq!(page.read_with(cx, |page, _| page.active_tab_for_probe()), 1);
+
+    // the app keeps one preview slot: with the kept tab active, the click
+    // takes over the preview tab that is already there
+    click(cx, "note-tab-0");
+    click(cx, "note-item-task.md");
+    assert_eq!(
+        page.read_with(cx, |page, _| page.tab_paths_for_probe()),
+        vec![alpha.join("list.md"), alpha.join("task.md")]
+    );
+    assert_eq!(
+        page.read_with(cx, |page, _| page.preview_tabs_for_probe()),
+        vec![false, true]
+    );
+    assert_eq!(page.read_with(cx, |page, _| page.active_tab_for_probe()), 1);
+
+    // double-clicking the tab keeps it too
+    double_click(cx, "note-tab-1");
+    assert_eq!(
+        page.read_with(cx, |page, _| page.preview_tabs_for_probe()),
+        vec![false, false]
+    );
+
+    // the middle button always opens a tab of its own
+    middle_click(cx, "note-item-note.md");
+    assert_eq!(
+        page.read_with(cx, |page, _| page.tab_paths_for_probe()),
+        vec![
+            alpha.join("list.md"),
+            alpha.join("task.md"),
+            alpha.join("note.md")
+        ]
+    );
+    assert_eq!(
+        page.read_with(cx, |page, _| page.preview_tabs_for_probe()),
+        vec![false, false, false]
+    );
+    assert_eq!(
+        page.read_with(cx, |page, _| page.open_note_path()),
+        Some(alpha.join("note.md"))
+    );
 
     let _ = std::fs::remove_dir_all(&home);
 }

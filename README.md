@@ -44,8 +44,11 @@ from DevTools into its own repo. Rust/GPUI (gpui-kit 0.9), one crate.
 - The title-bar search is store-wide by default; its popup scope chip narrows
   to the pinned repo. `Ctrl+Shift+F` (or "See all results") opens the full
   result list with highlighted excerpts.
-- Open notes appear in the strip under the titlebar: `Ctrl+Enter` in quick
-  open or the row menu's "Open in new tab" adds one, `Ctrl+W` closes,
+- Open notes appear in the strip under the titlebar. A single click in the
+  list opens a preview tab — its name is italic and the next single click
+  takes the tab over — while a double click in the list or on the tab keeps
+  it, and a middle click opens the note in a tab of its own. `Ctrl+Enter` in
+  quick open or the row menu's "Open in new tab" adds one, `Ctrl+W` closes,
   `Ctrl+Tab` cycles, and `Alt+Left`/`Right` (or the titlebar arrows) walk the
   open history.
 - The right-hand context panel toggles with `Ctrl+Shift+B`: Outline lists the

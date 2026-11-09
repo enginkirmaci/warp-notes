@@ -204,6 +204,31 @@ struct OpenTab {
     saved_text: String,
     saved_meta: Option<notes_core::FileMeta>,
     conflict: bool,
+    /// VS Code's preview tab: a single click in the list lands here and the
+    /// next single click takes the slot over. Opening the tab deliberately
+    /// (double click, menu, link, launch) keeps it.
+    preview: bool,
+}
+
+/// How an open lands in the strip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OpenMode {
+    /// A single click in the note list: a preview tab, replaced by the next
+    /// single click unless it was kept.
+    Preview,
+    /// Navigation — quick open, search, a link, history, a launch: it takes
+    /// the active tab's slot, the app's one-tab-at-a-time behavior.
+    Reuse,
+    /// A deliberate new tab: appended after the others, permanently.
+    New,
+}
+
+/// One tab's strip state, read out before the borrow of `self` ends.
+struct TabChip {
+    title: String,
+    active: bool,
+    dirty: bool,
+    preview: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -770,11 +795,17 @@ impl NotesPage {
     }
 
     pub(crate) fn open_note(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_note_inner(path, window, cx, false, true);
+        self.open_note_inner(path, window, cx, OpenMode::Reuse, true);
+    }
+
+    /// A single click in the note list: the tab is a preview the next click
+    /// may take over.
+    fn open_note_preview(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_note_inner(path, window, cx, OpenMode::Preview, true);
     }
 
     fn open_note_new_tab(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_note_inner(path, window, cx, true, true);
+        self.open_note_inner(path, window, cx, OpenMode::New, true);
     }
 
     /// Opens a note in the current tab (or in a new one), records history and
@@ -784,10 +815,19 @@ impl NotesPage {
         path: PathBuf,
         window: &mut Window,
         cx: &mut Context<Self>,
-        new_tab: bool,
+        mode: OpenMode,
         record_history: bool,
     ) {
         if let Some(index) = self.open_tabs.iter().position(|tab| tab.path == path) {
+            // a deliberate open keeps the tab it lands on
+            let mut kept = false;
+            if mode != OpenMode::Preview
+                && let Some(tab) = self.open_tabs.get_mut(index)
+                && tab.preview
+            {
+                tab.preview = false;
+                kept = true;
+            }
             if index != self.active_tab {
                 self.activate_tab(index, window, cx);
             } else {
@@ -796,6 +836,9 @@ impl NotesPage {
             }
             if record_history {
                 self.push_history(path);
+            }
+            if kept {
+                cx.notify();
             }
             return;
         }
@@ -818,25 +861,67 @@ impl NotesPage {
             .unwrap_or_else(|| baseline.clone());
         let meta = notes_core::note_meta(&path);
         let conflict = self.conflicts.contains(&path);
-        if new_tab || self.open_tabs.is_empty() {
-            self.open_tabs.push(OpenTab {
-                path: path.clone(),
-                saved_text: baseline.clone(),
-                saved_meta: meta,
-                conflict,
-            });
-            self.active_tab = self.open_tabs.len() - 1;
-        } else {
-            let tab = &mut self.open_tabs[self.active_tab];
-            tab.path = path.clone();
-            tab.saved_text = baseline.clone();
-            tab.saved_meta = meta;
-            tab.conflict = conflict;
+        let tab = OpenTab {
+            path: path.clone(),
+            saved_text: baseline.clone(),
+            saved_meta: meta,
+            conflict,
+            preview: mode == OpenMode::Preview,
+        };
+        match mode {
+            OpenMode::New => {
+                self.open_tabs.push(tab);
+                self.active_tab = self.open_tabs.len() - 1;
+            }
+            OpenMode::Reuse => match self.open_tabs.get_mut(self.active_tab) {
+                Some(slot) => *slot = tab,
+                None => {
+                    self.open_tabs.push(tab);
+                    self.active_tab = self.open_tabs.len() - 1;
+                }
+            },
+            OpenMode::Preview => {
+                // one preview slot: the active tab when it is a preview, else
+                // the tab that already is one, else a fresh tab beside the
+                // active one
+                let slot = if self
+                    .open_tabs
+                    .get(self.active_tab)
+                    .is_some_and(|tab| tab.preview)
+                {
+                    Some(self.active_tab)
+                } else {
+                    self.open_tabs.iter().position(|tab| tab.preview)
+                };
+                if let Some(index) = slot {
+                    self.open_tabs[index] = tab;
+                    self.active_tab = index;
+                } else if self.open_tabs.is_empty() {
+                    self.open_tabs.push(tab);
+                    self.active_tab = 0;
+                } else {
+                    // plant it right after the kept tab, as VS Code does
+                    let at = (self.active_tab + 1).min(self.open_tabs.len());
+                    self.open_tabs.insert(at, tab);
+                    self.active_tab = at;
+                }
+            }
         }
         self.remember_open_state(path, baseline, content, meta, conflict, window, cx);
         if record_history {
             self.push_history(self.open_note.clone().unwrap_or_default());
         }
+        cx.notify();
+    }
+
+    /// A double click on a tab keeps it: it stops being the slot a single
+    /// click takes over.
+    fn keep_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.open_tabs.get_mut(index) else {
+            return;
+        };
+        tab.preview = false;
+        self.activate_tab(index, window, cx);
         cx.notify();
     }
 
@@ -1030,7 +1115,7 @@ impl NotesPage {
         }
         let path = self.history[next].clone();
         self.history_index = next;
-        self.open_note_inner(path, window, cx, false, false);
+        self.open_note_inner(path, window, cx, OpenMode::Reuse, false);
     }
 
     fn schedule_store_path(&mut self, cx: &mut Context<Self>) {
@@ -2473,6 +2558,12 @@ impl NotesPage {
         self.active_tab
     }
 
+    /// Which open tabs are previews — for headless tab probes.
+    #[doc(hidden)]
+    pub fn preview_tabs_for_probe(&self) -> Vec<bool> {
+        self.open_tabs.iter().map(|tab| tab.preview).collect()
+    }
+
     /// The store root the page is currently using.
     #[doc(hidden)]
     pub fn store_root_for_probe(&self) -> PathBuf {
@@ -3182,7 +3273,7 @@ impl NotesPage {
     /// the selected tab joining the surface under it.
     fn render_tab_strip(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let active_text = self.editor.read(cx).value().to_string();
-        let tabs: Vec<(PathBuf, String, bool, bool)> = self
+        let tabs: Vec<TabChip> = self
             .open_tabs
             .iter()
             .enumerate()
@@ -3197,7 +3288,12 @@ impl NotesPage {
                     .file_name()
                     .map(|name| name.to_string_lossy().to_string())
                     .unwrap_or_else(|| "untitled".into());
-                (tab.path.clone(), title, index == self.active_tab, dirty)
+                TabChip {
+                    title,
+                    active: index == self.active_tab,
+                    dirty,
+                    preview: tab.preview,
+                }
             })
             .collect();
         let mut strip = shell::tab_strip()
@@ -3226,19 +3322,25 @@ impl NotesPage {
                     cx.notify();
                 })),
             );
-        for (index, (_, title, active, dirty)) in tabs.iter().enumerate() {
+        for (index, chip) in tabs.iter().enumerate() {
             strip = strip.child(
                 shell::strip_tab(
                     SharedString::from(format!("note-tab-{index}")),
-                    title.clone(),
-                    *active,
+                    chip.title.clone(),
+                    chip.active,
                     theme::panel(),
                 )
                 .debug_selector(move || format!("note-tab-{index}"))
                 .flex_shrink_0()
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.activate_tab(index, window, cx);
-                }))
+                .on_click(
+                    cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                        if event.click_count() > 1 {
+                            this.keep_tab(index, window, cx);
+                        } else {
+                            this.activate_tab(index, window, cx);
+                        }
+                    }),
+                )
                 .on_mouse_down(
                     MouseButton::Middle,
                     cx.listener(move |this, _, window, cx| {
@@ -3246,8 +3348,15 @@ impl NotesPage {
                         this.close_tab(index, window, cx);
                     }),
                 )
-                .child(div().min_w_0().truncate().child(title.clone()))
-                .when(*dirty, |tab| {
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        // a preview tab is italic, as in VS Code
+                        .when(chip.preview, |title| title.italic())
+                        .child(chip.title.clone()),
+                )
+                .when(chip.dirty, |tab| {
                     tab.child(
                         div()
                             .flex_shrink_0()
@@ -6107,11 +6216,25 @@ impl NotesPage {
             })
             .on_click({
                 let item = item.clone();
-                cx.listener(move |this, _, window, cx| {
+                cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
                     this.tree_cursor = Some(item.full_path.clone());
                     window.focus(&this.tree_focus, cx);
-                    this.open_note(item.full_path.clone(), window, cx);
+                    if event.click_count() > 1 {
+                        // a second click keeps the note, as VS Code's
+                        // double click in the explorer does
+                        this.open_note_new_tab(item.full_path.clone(), window, cx);
+                    } else {
+                        this.open_note_preview(item.full_path.clone(), window, cx);
+                    }
                     cx.notify();
+                })
+            })
+            .on_mouse_down(MouseButton::Middle, {
+                let path = item.full_path.clone();
+                cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.tree_cursor = Some(path.clone());
+                    this.open_note_new_tab(path.clone(), window, cx);
                 })
             })
             .child(icon(
