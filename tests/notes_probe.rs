@@ -240,7 +240,7 @@ fn repo_scope_up_button_tree_and_live_editor(cx: &mut TestAppContext) {
     // the palette is the same live picker the other apps carry, so a note on
     // Plum does not stay on a hardcoded Copper row. It lives in Appearance.
     click(cx, "settings-section-Appearance");
-    for key in ["copper", "plum", "pine", "blue"] {
+    for key in ["copper", "plum", "pine", "blue", "gray"] {
         let selector: &'static str = Box::leak(format!("palette-{key}").into_boxed_str());
         assert!(
             bounds(cx, selector).is_some(),
