@@ -1,5 +1,6 @@
 //! ui module: the Notes window and the shared titlebar control.
 
+pub mod about;
 pub mod notes;
 pub mod settings;
 

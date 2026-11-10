@@ -43,6 +43,7 @@ const AUTOSAVE_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Section {
     Notes,
+    About,
     Settings,
 }
 
@@ -266,8 +267,16 @@ pub struct NotesPage {
     /// one repo's folder under `projects/`. Fixed after launch except through
     /// the titlebar's up button.
     notes_scope: Option<String>,
-    /// The rail's open section: the tree + editor, or Settings.
+    /// The rail's open section: the tree + editor, About or Settings.
     section: Section,
+    /// About: which suite member the detail shows; Notes until another is
+    /// picked.
+    pub(crate) about_selected: warpui_kit_core::about::AppId,
+    /// The license card is up over the About section.
+    pub(crate) about_license_open: bool,
+    /// The license document, built the first time the card opens: read-only
+    /// markdown, so the GPL reads as prose and its text is selectable.
+    pub(crate) about_license: Option<gpui::Entity<warpui_kit_markdown::LiveEditorState>>,
     /// The Settings section's own section: General or Appearance.
     pub(crate) settings_section: SettingsSection,
     /// The remembered window bits: list width and reduce motion.
@@ -477,8 +486,10 @@ impl NotesPage {
         // the last session left it
         let section = match std::env::var("WARP_NOTES_PAGE").as_deref() {
             Ok("settings") => Section::Settings,
+            Ok("about") => Section::About,
             _ => match prefs.section.as_str() {
                 "settings" => Section::Settings,
+                "about" => Section::About,
                 _ => Section::Notes,
             },
         };
@@ -511,6 +522,9 @@ impl NotesPage {
             store_path_pending: None,
             notes_scope,
             section,
+            about_selected: warpui_kit_core::about::AppId::Notes,
+            about_license_open: false,
+            about_license: None,
             settings_section,
             prefs,
             list_visible,
@@ -1873,7 +1887,7 @@ impl NotesPage {
 
     /// The bottom-right toast: an error stays longer and carries a close
     /// button; a spawned timer hides it so no user action is needed.
-    fn notice(&mut self, cx: &mut Context<Self>, kind: NoticeKind, text: &str) {
+    pub(crate) fn notice(&mut self, cx: &mut Context<Self>, kind: NoticeKind, text: &str) {
         self.notice_with_action(cx, kind, text, None);
     }
 
@@ -3131,7 +3145,7 @@ impl Render for NotesPage {
                     this.set_section(
                         match this.section {
                             Section::Settings => Section::Notes,
-                            Section::Notes => Section::Settings,
+                            Section::Notes | Section::About => Section::Settings,
                         },
                         cx,
                     );
@@ -3141,6 +3155,10 @@ impl Render for NotesPage {
                     this.find.update(cx, |field, cx| field.focus(window, cx));
                     let term = this.find.read(cx).value().to_string();
                     this.run_find(term, cx);
+                    cx.notify();
+                    cx.stop_propagation();
+                } else if event.keystroke.key == "escape" && this.about_license_open {
+                    this.about_license_open = false;
                     cx.notify();
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.find_open {
@@ -3208,6 +3226,25 @@ impl Render for NotesPage {
         if self.search_results_open {
             root = root.child(self.render_search_results(window, cx));
         }
+        if self.about_license_open {
+            let editor = self.about_license.get_or_insert_with(|| {
+                warpui_kit_markdown::read_only_document(
+                    crate::ui::about::LICENSE.into(),
+                    window,
+                    cx,
+                )
+            });
+            let body = warpui_kit_markdown::render_read_only_document_in_card(editor, cx);
+            root = root.child(warpui_kit_core::about::license_dialog(
+                "about-license",
+                "GNU General Public License v3.0",
+                body,
+                cx.listener(|this, _, _, cx| {
+                    this.about_license_open = false;
+                    cx.notify();
+                }),
+            ));
+        }
         root
     }
 }
@@ -3227,6 +3264,7 @@ impl NotesPage {
         self.section = section;
         self.prefs.section = match section {
             Section::Notes => "notes",
+            Section::About => "about",
             Section::Settings => "settings",
         }
         .into();
@@ -3253,6 +3291,18 @@ impl NotesPage {
                 })),
             )
             .child(div().flex_1())
+            .child(
+                shell::rail_item(
+                    "rail-about",
+                    "icons/icon-about.svg",
+                    "About",
+                    section == Section::About,
+                )
+                .debug_selector(|| "rail-about".into())
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.set_section(Section::About, cx);
+                })),
+            )
             .child(
                 shell::rail_item(
                     "rail-settings",
@@ -3646,6 +3696,7 @@ impl NotesPage {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         match self.section {
+            Section::About => self.render_about(cx),
             Section::Settings => self.render_settings(window, cx),
             Section::Notes => {
                 let mut panes = shell::panes().min_w_0();
