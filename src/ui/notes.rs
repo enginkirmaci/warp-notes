@@ -55,6 +55,23 @@ enum ListScope {
     Pinned,
 }
 
+/// The shortcut sheet's two tabs: the tree and the editor.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ShortcutGroup {
+    #[default]
+    Tree,
+    Editor,
+}
+
+impl ShortcutGroup {
+    fn rows(self) -> &'static [(&'static str, &'static str)] {
+        match self {
+            Self::Tree => TREE_SHORTCUTS,
+            Self::Editor => EDITOR_SHORTCUTS,
+        }
+    }
+}
+
 /// The launch configuration the CLI parsed: the store root (Warp Station
 /// passes the resolved `notes_store_path`; standalone defaults to ~/notes),
 /// an optional pinned repo scope (that repo's folder under `projects/`), an
@@ -123,11 +140,8 @@ const SEARCH_RESULTS_ROWS: usize = 200;
 
 const SHOW_TOOLTIPS: bool = true;
 
-const SHORTCUTS: &[(&str, &str)] = &[
-    ("Ctrl+P", "Quick open"),
-    ("Ctrl+K", "Search notes"),
-    ("Ctrl+Shift+F", "Full search results"),
-    ("Ctrl+Shift+B", "Outline and links"),
+/// The tree tab: cursor moves, file actions and the list toggle.
+const TREE_SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl+Shift+E", "Focus the tree"),
     ("Up / Down", "Move the tree cursor"),
     ("Left / Right", "Collapse / expand"),
@@ -135,9 +149,17 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("F2", "Rename"),
     ("Delete", "Move to Trash"),
     ("Ctrl+D", "Duplicate"),
-    ("Ctrl+S", "Save now"),
     ("Ctrl+N", "New note"),
     ("Ctrl+\\", "Toggle the list"),
+];
+
+/// The editor tab: quick open, tabs and history, search, and the note itself.
+const EDITOR_SHORTCUTS: &[(&str, &str)] = &[
+    ("Ctrl+P", "Quick open"),
+    ("Ctrl+K", "Search notes"),
+    ("Ctrl+Shift+F", "Full search results"),
+    ("Ctrl+Shift+B", "Outline and links"),
+    ("Ctrl+S", "Save now"),
     ("Ctrl+W", "Close the active tab"),
     ("Ctrl+Tab", "Next tab"),
     ("Alt+Left / Right", "Back / forward"),
@@ -367,6 +389,8 @@ pub struct NotesPage {
     find_index: usize,
     /// Ctrl+/ shortcut cheat sheet.
     shortcut_open: bool,
+    /// The cheat sheet's selected tab: the tree or the editor.
+    shortcut_group: ShortcutGroup,
     /// The live markdown editor.
     editor: Entity<LiveEditorState>,
     /// The debounced autosave: every edit bumps this, and only the task from
@@ -571,6 +595,7 @@ impl NotesPage {
             find_hits: Vec::new(),
             find_index: 0,
             shortcut_open: false,
+            shortcut_group: ShortcutGroup::Tree,
             editor,
             save_epoch: 0,
             create_open: false,
@@ -1333,7 +1358,7 @@ impl NotesPage {
         let tree = notes_core::load_tree(&self.store_root);
         collect_palette_items(&tree, &self.store_root, &mut items);
         items.sort_by(|left, right| left.relative.cmp(&right.relative));
-        self.palette_items = items;
+        self.palette_items = order_palette_items(items, &self.prefs.pinned, &self.prefs.recent);
         self.palette_open = true;
         self.palette_selected = 0;
         self.prompt = None;
@@ -1362,51 +1387,25 @@ impl NotesPage {
 
     fn palette_rows(&self, cx: &Context<Self>) -> Vec<PaletteItem> {
         let query = self.palette_input.read(cx).value().trim().to_lowercase();
-        let mut rows: Vec<(i32, PaletteItem)> = Vec::new();
         if query.is_empty() {
-            let mut seen = HashSet::new();
-            for relative in &self.prefs.pinned {
-                if let Some(item) = self
-                    .palette_items
-                    .iter()
-                    .find(|item| &item.relative == relative)
-                    && seen.insert(item.path.clone())
-                {
-                    rows.push((2, item.clone()));
-                }
-            }
-            for relative in &self.prefs.recent {
-                if let Some(item) = self
-                    .palette_items
-                    .iter()
-                    .find(|item| &item.relative == relative)
-                    && seen.insert(item.path.clone())
-                {
-                    rows.push((1, item.clone()));
-                }
-            }
-            for item in &self.palette_items {
-                if seen.insert(item.path.clone()) {
-                    rows.push((0, item.clone()));
-                }
-            }
-        } else {
-            for item in &self.palette_items {
-                let score = fuzzy_score(&query, &item.title)
-                    .into_iter()
-                    .chain(fuzzy_score(&query, &item.relative))
-                    .max();
-                if let Some(score) = score {
-                    rows.push((score, item.clone()));
-                }
-            }
-            rows.sort_by(|left, right| {
-                right
-                    .0
-                    .cmp(&left.0)
-                    .then_with(|| left.1.relative.cmp(&right.1.relative))
-            });
+            return self.palette_items.iter().take(12).cloned().collect();
         }
+        let mut rows: Vec<(i32, PaletteItem)> = Vec::new();
+        for item in &self.palette_items {
+            let score = fuzzy_score(&query, &item.title)
+                .into_iter()
+                .chain(fuzzy_score(&query, &item.relative))
+                .max();
+            if let Some(score) = score {
+                rows.push((score, item.clone()));
+            }
+        }
+        rows.sort_by(|left, right| {
+            right
+                .0
+                .cmp(&left.0)
+                .then_with(|| left.1.relative.cmp(&right.1.relative))
+        });
         rows.into_iter().map(|(_, item)| item).take(12).collect()
     }
 
@@ -1416,6 +1415,7 @@ impl NotesPage {
         let Some(item) = rows.get(index).cloned() else {
             return;
         };
+        self.palette_selected = index;
         self.palette_open = false;
         self.open_note_anywhere(item.path, window, cx);
     }
@@ -1426,6 +1426,7 @@ impl NotesPage {
         let Some(item) = rows.get(index).cloned() else {
             return;
         };
+        self.palette_selected = index;
         self.palette_open = false;
         self.open_note_new_tab(item.path, window, cx);
     }
@@ -2730,6 +2731,33 @@ fn collect_palette_items(
             });
         }
     }
+}
+
+/// Quick open's empty-query order: pinned notes, then the recent ones, then
+/// the rest of the store. A note pinned and opened appears once.
+fn order_palette_items(
+    items: Vec<PaletteItem>,
+    pinned: &[String],
+    recent: &[String],
+) -> Vec<PaletteItem> {
+    let mut slots: Vec<Option<PaletteItem>> = items.into_iter().map(Some).collect();
+    let by_relative: HashMap<String, usize> = slots
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| item.as_ref().map(|item| (item.relative.clone(), index)))
+        .collect();
+    let mut ordered = Vec::with_capacity(slots.len());
+    for relative in pinned.iter().chain(recent.iter()) {
+        if let Some(index) = by_relative.get(relative)
+            && let Some(item) = slots[*index].take()
+        {
+            ordered.push(item);
+        }
+    }
+    for item in slots.into_iter().flatten() {
+        ordered.push(item);
+    }
+    ordered
 }
 
 fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
@@ -4153,10 +4181,10 @@ impl NotesPage {
             .role(gpui::Role::Dialog)
             .occlude()
             .w(px(theme::PROMPT_WIDTH))
-            .rounded(px(8.))
+            .rounded(px(10.))
             .border_1()
             .border_color(theme::line_strong())
-            .bg(theme::panel())
+            .bg(theme::popup())
             .shadow_lg()
             .p_4()
             .flex()
@@ -4175,7 +4203,7 @@ impl NotesPage {
             }))
             .child(
                 div()
-                    .text_size(px(theme::font_screen_title()))
+                    .text_size(px(theme::font_brand()))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme::text())
                     .child(kind.title()),
@@ -4347,10 +4375,10 @@ impl NotesPage {
             .role(gpui::Role::Dialog)
             .occlude()
             .w(px(theme::TRASH_WIDTH))
-            .rounded(px(8.))
+            .rounded(px(10.))
             .border_1()
             .border_color(theme::line_strong())
-            .bg(theme::panel())
+            .bg(theme::popup())
             .shadow_lg()
             .p_4()
             .flex()
@@ -4373,7 +4401,7 @@ impl NotesPage {
                     .child(
                         div()
                             .flex_1()
-                            .text_size(px(theme::font_screen_title()))
+                            .text_size(px(theme::font_brand()))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme::text())
                             .child("Trash"),
@@ -4464,9 +4492,16 @@ impl NotesPage {
             .into_any_element()
     }
 
+    fn set_shortcut_group(&mut self, group: ShortcutGroup, cx: &mut Context<Self>) {
+        if self.shortcut_group != group {
+            self.shortcut_group = group;
+            cx.notify();
+        }
+    }
+
     fn render_shortcuts(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let mut rows = div().flex().flex_col().gap_1();
-        for (keys, label) in SHORTCUTS {
+        for (keys, label) in self.shortcut_group.rows() {
             rows = rows.child(
                 div()
                     .flex()
@@ -4494,6 +4529,19 @@ impl NotesPage {
                     ),
             );
         }
+        let choices = vec![
+            warpui_kit_core::settings::Choice::new(
+                "tree",
+                "Tree",
+                self.shortcut_group == ShortcutGroup::Tree,
+            ),
+            warpui_kit_core::settings::Choice::new(
+                "editor",
+                "Editor",
+                self.shortcut_group == ShortcutGroup::Editor,
+            ),
+        ];
+        let page = cx.entity();
         let card = div()
             .id("shortcut-card")
             .debug_selector(|| "shortcut-card".into())
@@ -4501,10 +4549,10 @@ impl NotesPage {
             .occlude()
             .w(px(theme::PROMPT_WIDTH + 60.))
             .max_h(px(600.))
-            .rounded(px(8.))
+            .rounded(px(10.))
             .border_1()
             .border_color(theme::line_strong())
-            .bg(theme::panel())
+            .bg(theme::popup())
             .shadow_lg()
             .p_4()
             .flex()
@@ -4513,7 +4561,7 @@ impl NotesPage {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
                 div()
-                    .text_size(px(theme::font_screen_title()))
+                    .text_size(px(theme::font_brand()))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme::text())
                     .child("Keyboard"),
@@ -4526,8 +4574,25 @@ impl NotesPage {
             )
             .child(
                 div()
+                    .flex()
+                    .flex_row()
+                    .child(warpui_kit_core::settings::segmented(
+                        "shortcut-group",
+                        choices,
+                        move |key, _, cx| {
+                            let group = if key.as_ref() == "editor" {
+                                ShortcutGroup::Editor
+                            } else {
+                                ShortcutGroup::Tree
+                            };
+                            page.update(cx, |this, cx| this.set_shortcut_group(group, cx));
+                        },
+                    )),
+            )
+            .child(
+                div()
                     .id("shortcut-list")
-                    .max_h(px(470.))
+                    .max_h(px(430.))
                     .overflow_y_scroll()
                     .child(rows),
             )
@@ -4580,6 +4645,7 @@ impl NotesPage {
         let rows = self.palette_rows(cx);
         let row_count = rows.len();
         let selected = self.palette_selected.min(row_count.saturating_sub(1));
+        self.palette_selected = selected;
         let mut list = div().flex().flex_col().gap_0p5();
         if rows.is_empty() {
             list = list.child(
@@ -4639,10 +4705,10 @@ impl NotesPage {
             .role(gpui::Role::Dialog)
             .occlude()
             .w(px(theme::PALETTE_WIDTH))
-            .rounded(px(8.))
+            .rounded(px(10.))
             .border_1()
             .border_color(theme::line_strong())
-            .bg(theme::panel())
+            .bg(theme::popup())
             .shadow_lg()
             .p_3()
             .flex()
@@ -4813,10 +4879,10 @@ impl NotesPage {
             .role(gpui::Role::Dialog)
             .occlude()
             .w(px(760.))
-            .rounded(px(8.))
+            .rounded(px(10.))
             .border_1()
             .border_color(theme::line_strong())
-            .bg(theme::panel())
+            .bg(theme::popup())
             .shadow_lg()
             .p_4()
             .flex()
@@ -4838,7 +4904,7 @@ impl NotesPage {
                     .child(
                         div()
                             .flex_1()
-                            .text_size(px(theme::font_screen_title()))
+                            .text_size(px(theme::font_brand()))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme::text())
                             .child(format!("Search: {term}")),
@@ -6721,7 +6787,32 @@ impl NotesPage {
 
 #[cfg(test)]
 mod tests {
-    use super::{fuzzy_score, match_ranges};
+    use super::{PaletteItem, fuzzy_score, match_ranges, order_palette_items};
+    use std::path::PathBuf;
+
+    #[test]
+    fn quick_open_orders_pinned_then_recent_then_the_rest() {
+        let item = |relative: &str| PaletteItem {
+            path: PathBuf::from(relative),
+            title: relative.to_string(),
+            relative: relative.to_string(),
+        };
+        let ordered = order_palette_items(
+            vec![item("a.md"), item("b.md"), item("c.md"), item("d.md")],
+            &["c.md".to_string()],
+            &[
+                "b.md".to_string(),
+                "c.md".to_string(),
+                "missing.md".to_string(),
+            ],
+        );
+        let relatives: Vec<&str> = ordered.iter().map(|item| item.relative.as_str()).collect();
+        assert_eq!(
+            relatives,
+            vec!["c.md", "b.md", "a.md", "d.md"],
+            "pinned first, then recent, then the rest; c.md appears once"
+        );
+    }
 
     #[test]
     fn fuzzy_score_prefers_prefix_and_boundary_matches() {
