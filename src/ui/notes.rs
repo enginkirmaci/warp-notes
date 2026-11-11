@@ -14,8 +14,8 @@ use crate::ui_prefs::UiPrefs;
 use gpui::prelude::*;
 use gpui::{
     App, Context, Entity, Focusable as _, FontWeight, MouseButton, Pixels, ScrollEvent,
-    ScrollHandle, SharedString, UniformListScrollHandle, WeakEntity, Window, WindowControlArea,
-    canvas, div, px, uniform_list,
+    ScrollHandle, ScrollStrategy, SharedString, UniformListScrollHandle, WeakEntity, Window,
+    WindowControlArea, canvas, div, px, uniform_list,
 };
 use gpui_kit::component::input::{InputEvent, InputState};
 use std::cell::Cell;
@@ -318,6 +318,9 @@ pub struct NotesPage {
     /// The tree's keyboard focus and selected row, separate from the open
     /// note: moving the cursor does not replace the editor.
     tree_focus: gpui::FocusHandle,
+    /// Mirrors `tree_focus`: the cursor row dims when the editor, a field or
+    /// another pane owns the keys.
+    tree_focused: bool,
     tree_cursor: Option<PathBuf>,
     /// The window root's focus, so global keys work before a note is open.
     page_focus: gpui::FocusHandle,
@@ -538,6 +541,17 @@ impl NotesPage {
             .map(|relative| store_root.join(relative.replace('\\', "/")))
             .collect();
         let list_visible = prefs.list_visible;
+        let tree_focus = cx.focus_handle();
+        cx.on_focus(&tree_focus, window, |this, _, cx| {
+            this.tree_focused = true;
+            cx.notify();
+        })
+        .detach();
+        cx.on_blur(&tree_focus, window, |this, _, cx| {
+            this.tree_focused = false;
+            cx.notify();
+        })
+        .detach();
         let mut page = Self {
             store_root,
             store_pinned,
@@ -555,7 +569,8 @@ impl NotesPage {
             list_scope: ListScope::All,
             splitter_drag: Rc::new(Cell::new(None)),
             tree_scroll: UniformListScrollHandle::default(),
-            tree_focus: cx.focus_handle(),
+            tree_focus,
+            tree_focused: false,
             tree_cursor: None,
             page_focus: cx.focus_handle(),
             settings_scroll: ScrollHandle::default(),
@@ -2507,6 +2522,13 @@ impl NotesPage {
     #[doc(hidden)]
     pub fn tree_cursor_for_probe(&self) -> Option<PathBuf> {
         self.tree_cursor.clone()
+    }
+
+    /// The tree's scroll offset — for the keyboard probe that checks a
+    /// stepped row is brought into view.
+    #[doc(hidden)]
+    pub fn tree_scroll_offset_for_probe(&self) -> gpui::Point<gpui::Pixels> {
+        self.tree_scroll.0.borrow().base_handle.offset()
     }
 
     /// The list head's live counts — for headless head probes.
@@ -6023,6 +6045,8 @@ impl NotesPage {
         else {
             let index = if delta < 0 { rows.len() - 1 } else { 0 };
             self.tree_cursor = Some(rows[index].0.clone());
+            self.tree_scroll
+                .scroll_to_item(index, ScrollStrategy::Nearest);
             cx.notify();
             return;
         };
@@ -6030,19 +6054,24 @@ impl NotesPage {
             .saturating_add(delta)
             .clamp(0, rows.len() as isize - 1) as usize;
         self.tree_cursor = Some(rows[next].0.clone());
+        self.tree_scroll
+            .scroll_to_item(next, ScrollStrategy::Nearest);
         cx.notify();
     }
 
     fn jump_tree_cursor(&mut self, last: bool, cx: &mut Context<Self>) {
         let rows = self.visible_row_paths();
-        let Some((path, _)) = rows.get(if last {
+        let index = if last {
             rows.len().saturating_sub(1)
         } else {
             0
-        }) else {
+        };
+        let Some((path, _)) = rows.get(index) else {
             return;
         };
         self.tree_cursor = Some(path.clone());
+        self.tree_scroll
+            .scroll_to_item(index, ScrollStrategy::Nearest);
         cx.notify();
     }
 
@@ -6195,7 +6224,7 @@ impl NotesPage {
             .h(px(theme::scaled(TREE_ROW_HEIGHT)))
             .pl(px(10. + depth as f32 * 14.))
             .pr_3()
-            .when(cursor, |d| d.bg(theme::raised()))
+            .when(cursor && self.tree_focused, |d| d.bg(theme::raised()))
             .hover(|s| s.bg(theme::panel()))
             .on_mouse_down(MouseButton::Right, {
                 let path = item.full_path.clone();
@@ -6303,7 +6332,9 @@ impl NotesPage {
                 )
             })
             .when(!selected, |d| d.hover(|s| s.bg(theme::panel())))
-            .when(cursor && !selected, |d| d.bg(theme::raised()))
+            .when(cursor && !selected && self.tree_focused, |d| {
+                d.bg(theme::raised())
+            })
             .on_mouse_down(MouseButton::Right, {
                 let path = item.full_path.clone();
                 let is_folder = item.is_folder;

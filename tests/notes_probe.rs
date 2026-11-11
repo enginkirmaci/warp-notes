@@ -1791,6 +1791,56 @@ fn keyboard_tree_moves_and_opens(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn keyboard_tree_keeps_the_cursor_in_view(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-tree-scroll");
+    let alpha = home.join("notes/projects/alpha");
+    for index in 0..40 {
+        std::fs::write(
+            alpha.join(format!("row-{index:02}.md")),
+            format!("# Row {index}\n"),
+        )
+        .unwrap();
+    }
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    let focus = page.read_with(cx, |page, _| page.tree_focus_handle());
+    cx.update(|window, cx| window.focus(&focus, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("end");
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    assert!(
+        page.read_with(cx, |page, _| page.tree_scroll_offset_for_probe())
+            .y
+            < px(0.),
+        "End scrolls the tree to the cursor row"
+    );
+    page.read_with(cx, |page, _| {
+        assert!(
+            page.tree_cursor_for_probe().is_some(),
+            "End leaves the cursor on the last row"
+        );
+    });
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
 fn search_selects_with_arrows(cx: &mut TestAppContext) {
     let _guard = hold_home();
     cx.update(gpui_kit::init);

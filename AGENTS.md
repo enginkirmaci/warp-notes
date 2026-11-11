@@ -85,6 +85,9 @@ cargo build -p warp-notes
   contract.
 - `tests/layout_migration.rs` drives the scratch-HOME migration end to end.
   HOME is process-global, so scenarios take turns behind its lock.
+- The tree's cursor belongs to `tree_focus`: arrows scroll it into view and
+  its raised emphasis only shows while the tree owns the keys. A field or the
+  editor keeps its own arrows; do not add a window-level tree key handler.
 - The capture hook is `WARP_NOTES_PAGE=settings`.
 
 ## App-specific contracts
