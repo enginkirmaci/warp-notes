@@ -82,8 +82,9 @@ fn about_opens_on_notes_and_copies_the_selected_app(cx: &mut TestAppContext) {
 
     click(cx, "about-copy-version");
     let line = clipboard_text(cx).expect("copy version writes the clipboard");
+    let version = env!("CARGO_PKG_VERSION");
     assert!(
-        line.starts_with("Warp Notes 0.1.0 ("),
+        line.starts_with(&format!("Warp Notes {version} (")),
         "the copy line names Notes, got {line:?}"
     );
     assert!(line.ends_with("· dev"), "a plain build says dev: {line:?}");

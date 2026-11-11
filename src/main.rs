@@ -43,6 +43,21 @@ fn parse_launch() -> Launch {
 }
 
 fn main() {
+    // The support contract, before migrations and logging: `--version` answers
+    // with the same line the About screen copies.
+    if std::env::args()
+        .skip(1)
+        .any(|arg| arg == "--version" || arg == "-V")
+    {
+        let build = warpui_kit_core::build_info!();
+        println!(
+            "{}",
+            build.version_line(warpui_kit_core::about::app(
+                warpui_kit_core::about::AppId::Notes
+            ))
+        );
+        return;
+    }
     // the data folder moved under ~/.warp and the store to ~/notes: absorb
     // the legacy folders before logging picks its file
     paths::migrate_legacy_layout();

@@ -1,9 +1,9 @@
 ; Inno Setup 6 script — per-user installer for Warp Notes.
-; build.ps1 invokes this with /DMyAppVersion=<suite version>;
-; the fallback below keeps plain `ISCC warp-notes.iss` working too.
+; build.ps1 passes /DMyAppVersion=<suite version from version.toml>; a manual
+; `ISCC warp-notes.iss` must pass it too, so there is no stale fallback here.
 
 #ifndef MyAppVersion
-#define MyAppVersion "0.1.0"
+  #error MyAppVersion is required: pass /DMyAppVersion=<version from version.toml>
 #endif
 
 #define MyAppName "Warp Notes"
