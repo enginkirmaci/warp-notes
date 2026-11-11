@@ -2596,25 +2596,6 @@ fn byte_to_char(text: &str, byte: usize) -> usize {
     text[..byte.min(text.len())].chars().count()
 }
 
-/// True when a vertical scroller at `offset` (≤ 0, clamped to `max_offset`)
-/// has room to move for `delta` — the "the inner one handled it" test. A
-/// wheel event routed to an inner scrollable must not also scroll an outer
-/// one, but a scroller already hard against the edge in the wheel's
-/// direction lets the event pass, as browsers chain it.
-pub(crate) fn wheel_reaches_content(
-    offset: gpui::Point<Pixels>,
-    max_offset: gpui::Point<Pixels>,
-    delta: gpui::Pixels,
-) -> bool {
-    if delta < px(0.) {
-        // scrolling toward the bottom: room is whatever is left below
-        -offset.y < max_offset.y
-    } else {
-        // scrolling back toward the top: any offset off the top moves
-        offset.y < px(0.)
-    }
-}
-
 /// Every note's file name in the tree.
 fn collect_note_names(items: &[Rc<notes_core::NotesTreeItem>], names: &mut Vec<String>) {
     for item in items {
@@ -6472,12 +6453,12 @@ impl NotesPage {
         // the tree is the inner scrollable of the list pane: when a wheel
         // event moves it, it is consumed here, so nothing outside — today or
         // after a later restack — reacts to the same event
-        .on_scroll(cx.listener(|this, event: &ScrollEvent, window, cx| {
-            let state = this.tree_scroll.0.borrow();
-            let (offset, max) = (state.base_handle.offset(), state.base_handle.max_offset());
-            if wheel_reaches_content(offset, max, event.delta.pixel_delta(window.line_height()).y) {
-                cx.stop_propagation();
-            }
+        .on_scroll(cx.listener(|this, event: &ScrollEvent, _window, cx| {
+            let handle = this.tree_scroll.0.borrow().base_handle.clone();
+            // a `gpui::list` turns a line delta into pixels with 20, not the
+            // window's line height; the edge test needs the same basis
+            let delta = event.delta.pixel_delta(px(20.)).y;
+            warpui_kit_core::scroll::consume_wheel_by(&handle, delta, cx);
         }))
         .flex_1()
         .min_h_0()

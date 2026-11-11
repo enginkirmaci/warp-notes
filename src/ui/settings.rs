@@ -7,7 +7,7 @@
 
 use crate::theme;
 use crate::ui::A11y;
-use crate::ui::notes::{NotesPage, wheel_reaches_content};
+use crate::ui::notes::NotesPage;
 use gpui::prelude::*;
 use gpui::{Context, FontWeight, SharedString, Window, div, px};
 use warpui_kit_core::settings as kit;
@@ -157,14 +157,12 @@ impl NotesPage {
                             // a later frame) never reacts to the same event
                             .on_scroll(cx.listener(
                                 |this, event: &gpui::ScrollEvent, window, cx| {
-                                    let handle = &this.settings_scroll;
-                                    if wheel_reaches_content(
-                                        handle.offset(),
-                                        handle.max_offset(),
-                                        event.delta.pixel_delta(window.line_height()).y,
-                                    ) {
-                                        cx.stop_propagation();
-                                    }
+                                    warpui_kit_core::scroll::consume_wheel(
+                                        &this.settings_scroll,
+                                        event,
+                                        window,
+                                        cx,
+                                    );
                                 },
                             ))
                             .p(px(shell::DETAIL_PADDING))
