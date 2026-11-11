@@ -2518,6 +2518,13 @@ impl NotesPage {
         self.tree_focus.clone()
     }
 
+    /// Whether the tree currently owns the keyboard, for the focus-emphasis
+    /// probe.
+    #[doc(hidden)]
+    pub fn tree_focused_for_probe(&self) -> bool {
+        self.tree_focused
+    }
+
     /// The selected tree row — for headless keyboard probes.
     #[doc(hidden)]
     pub fn tree_cursor_for_probe(&self) -> Option<PathBuf> {
@@ -6334,6 +6341,18 @@ impl NotesPage {
             .when(!selected, |d| d.hover(|s| s.bg(theme::panel())))
             .when(cursor && !selected && self.tree_focused, |d| {
                 d.bg(theme::raised())
+            })
+            // A zero-size marker for the focus-emphasis probe: it is in the
+            // frame exactly when this cursor row is drawn with the gate open.
+            .when(cursor && self.tree_focused, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size(px(0.))
+                        .debug_selector(|| "note-cursor-emphasis".into()),
+                )
             })
             .on_mouse_down(MouseButton::Right, {
                 let path = item.full_path.clone();

@@ -465,6 +465,113 @@ fn opening_a_note_puts_the_keyboard_in_the_editor(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn tree_focus_emphasis_tracks_the_keyboard(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-tree-emphasis");
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    // Focus listeners only reach the page while the window counts as active;
+    // headless windows start inactive.
+    cx.update(|window, _| window.activate_window());
+    cx.run_until_parked();
+    let draw = |cx: &mut VisualTestContext| {
+        // one draw dispatches focus events, the next renders their effect
+        for _ in 0..2 {
+            cx.update(|window, cx| drop(window.draw(cx)));
+            cx.run_until_parked();
+        }
+    };
+    draw(cx);
+
+    // The tree owns the keys: it raises a cursor row that is not the open note.
+    let focus = page.read_with(cx, |page, _| page.tree_focus_handle());
+    cx.update(|window, cx| window.focus(&focus, cx));
+    cx.run_until_parked();
+    draw(cx);
+    cx.simulate_keystrokes("down down");
+    cx.run_until_parked();
+    draw(cx);
+    page.read_with(cx, |page, _| {
+        assert!(
+            page.tree_focused_for_probe(),
+            "focusing the tree marks it focused"
+        );
+        let cursor = page.tree_cursor_for_probe().expect("the tree has a cursor");
+        assert_eq!(
+            page.open_note_path(),
+            None,
+            "the cursor row is a non-selected row"
+        );
+        assert!(
+            cursor.extension().is_some_and(|ext| ext == "md"),
+            "the cursor landed on a note row: {}",
+            cursor.display()
+        );
+    });
+    assert!(
+        bounds(cx, "note-cursor-emphasis").is_some(),
+        "the focused tree draws the cursor emphasis"
+    );
+    let cursor = page
+        .read_with(cx, |page, _| page.tree_cursor_for_probe())
+        .expect("the tree keeps its cursor");
+
+    // Enter hands the keyboard to the editor: the cursor row stays, the
+    // emphasis does not.
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    draw(cx);
+    page.read_with(cx, |page, _| {
+        assert!(
+            !page.tree_focused_for_probe(),
+            "opening a note hands the keyboard to the editor"
+        );
+        assert!(
+            page.open_note_path().is_some(),
+            "Enter opened the cursor note"
+        );
+        assert_eq!(
+            page.tree_cursor_for_probe(),
+            Some(cursor.clone()),
+            "the cursor row stays while the editor owns the keys"
+        );
+    });
+    assert!(
+        bounds(cx, "note-cursor-emphasis").is_none(),
+        "the editor-owned tree draws no cursor emphasis"
+    );
+
+    // Ctrl+Shift+E returns the keys to the tree and the emphasis with them.
+    cx.simulate_keystrokes("ctrl-shift-e");
+    cx.run_until_parked();
+    draw(cx);
+    page.read_with(cx, |page, _| {
+        assert!(
+            page.tree_focused_for_probe(),
+            "Ctrl+Shift+E returns the keyboard to the tree"
+        );
+    });
+    assert!(
+        bounds(cx, "note-cursor-emphasis").is_some(),
+        "the emphasis returns with the tree's focus"
+    );
+
+    cx.deactivate_window();
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
 fn following_a_wikilink_opens_or_creates_the_note(cx: &mut TestAppContext) {
     let _guard = hold_home();
     cx.update(gpui_kit::init);
