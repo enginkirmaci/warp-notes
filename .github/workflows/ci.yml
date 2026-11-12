@@ -1,0 +1,58 @@
+name: ci
+
+# The app's own gate. The kits come from the pinned git tag, so the job needs
+# a read token for the private warp-suite repository (KITS_READ_TOKEN).
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Configure the kit read token
+        env:
+          KITS_READ_TOKEN: ${{ secrets.KITS_READ_TOKEN }}
+        run: |
+          if [ -z "$KITS_READ_TOKEN" ]; then
+            echo "::error::KITS_READ_TOKEN is not set; the kit git dependency cannot be fetched"
+            exit 1
+          fi
+          git config --global url."https://x-access-token:${KITS_READ_TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      - name: Read the pinned channel
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+        id: toolchain
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Version consistency
+        run: python3 scripts/version.py check
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+      - name: cargo clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --locked

@@ -1,42 +1,43 @@
 [package]
 name = "warp-notes"
-version.workspace = true
-edition.workspace = true
+version = "0.1.1"
+edition = "2024"
 description = "WarpNotes — per-repo markdown notes with an Obsidian-style live editor"
-license.workspace = true
+license = "GPL-3.0"
+repository = "https://github.com/enginkirmaci/warp-notes"
 publish = false
 
 # src/lib.rs is the probe boundary (tests/ build the real views); the binary is
 # a thin bootstrap over it. Both targets come from cargo's defaults.
 
 [dependencies]
-# suite crates — the paths live in [workspace.dependencies]
-warpui-kit-core = { workspace = true }
-warpui-kit-markdown = { workspace = true, features = ["mermaid", "all-languages"] }
-warpui-kit-platform = { workspace = true }
+# kit line: pinned by tag, patched to kits/ by warp-suite's local build
+warpui-kit-core = { git = "https://github.com/enginkirmaci/warp-suite", tag = "kits-v0.1.11", package = "warpui-kit-core" }
+warpui-kit-markdown = { git = "https://github.com/enginkirmaci/warp-suite", tag = "kits-v0.1.11", package = "warpui-kit-markdown", features = ["mermaid", "all-languages"] }
+warpui-kit-platform = { git = "https://github.com/enginkirmaci/warp-suite", tag = "kits-v0.1.11", package = "warpui-kit-platform" }
 
-# the gpui stack, pinned at the workspace root
-gpui = { workspace = true }
-gpui_platform = { workspace = true }
-gpui-kit = { workspace = true }
+# the gpui stack, pinned here because the app builds standalone
+gpui = { package = "gpui-pre", version = "=0.3.11" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features = ["wayland", "x11"] }
+gpui-kit = "0.9"
 
 # third-party
-anyhow = { workspace = true }
-chrono = { workspace = true }
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # debug-embed: embed assets at compile time in debug builds too — without it
 # rust-embed resolves "assets" against the process CWD at runtime, so the app
 # only finds its icons when launched from the repo root
-rust-embed = { workspace = true, features = ["debug-embed"] }
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
-tracing = { workspace = true }
-tracing-appender = { workspace = true }
-tracing-subscriber = { workspace = true }
+rust-embed = { version = "8", features = ["debug-embed"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [dev-dependencies]
 # headless UI probes (tests/); feature-unifies with the normal gpui-kit dep
 # only under `cargo test`
-gpui-kit = { workspace = true, features = ["test-support"] }
+gpui-kit = { version = "0.9", features = ["test-support"] }
 
 [build-dependencies]
-warpui-kit-build = { workspace = true }
+warpui-kit-build = { git = "https://github.com/enginkirmaci/warp-suite", tag = "kits-v0.1.11", package = "warpui-kit-build" }

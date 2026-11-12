@@ -1,0 +1,12 @@
+# The suite pins the toolchain minor: release binaries were reproducible only
+# against whatever stable was live on dispatch day before this file. Patch
+# releases still flow; a minor bump is a deliberate edit, and rust-cache keys
+# on the rustc version so CI recompiles exactly once per bump.
+#
+# The workflows do NOT rely on this file being auto-honored: dtolnay/rust-toolchain
+# installs the `stable` alias, and this file's channel resolves only to a
+# version-named install, so every workflow reads `channel` out of here and
+# passes it as the action's toolchain input (with its components). Bumping the
+# channel is still a one-file edit.
+[toolchain]
+channel = "1.99"

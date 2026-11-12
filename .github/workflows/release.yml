@@ -1,0 +1,164 @@
+name: release
+
+# Tag the commit whose version.toml says v<version>. The two platform jobs
+# build the app from this repository alone; the release job combines their
+# assets.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check the tag against version.toml
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          actual=$(python3 scripts/version.py show --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')
+          test "$tag" = "$actual" || {
+            echo "::error::version.toml says $actual, the tag says $tag"
+            exit 1
+          }
+
+      - name: Configure the kit read token
+        env:
+          KITS_READ_TOKEN: ${{ secrets.KITS_READ_TOKEN }}
+        run: |
+          if [ -z "$KITS_READ_TOKEN" ]; then
+            echo "::error::KITS_READ_TOKEN is not set; the kit git dependency cannot be fetched"
+            exit 1
+          fi
+          git config --global url."https://x-access-token:${KITS_READ_TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      - name: Read the pinned channel
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+        id: toolchain
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo build --release
+        run: cargo build --release --locked
+
+      - name: Stage the Linux bundle
+        run: |
+          version=$(python3 scripts/version.py show --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')
+          stage="dist/warp-notes-$version-linux"
+          mkdir -p "$stage/bin" "$stage/applications" "$stage/icons/hicolor"
+          cp target/release/warp-notes "$stage/bin/"
+          for f in packaging/linux/icons/warpnotes-*.png; do
+            size=$(basename "$f" | sed -E 's/.*-([0-9]+)\.png/\1/')
+            install -Dm644 "$f" "$stage/icons/hicolor/${size}x${size}/apps/warpnotes.png"
+          done
+          install -Dm644 packaging/linux/icons/warpnotes.svg "$stage/icons/hicolor/scalable/apps/warpnotes.svg"
+          cp packaging/linux/warp-notes.desktop "$stage/applications/"
+          tar -czf "dist/warp-notes-$version-linux.tar.gz" -C dist "warp-notes-$version-linux"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-linux
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check the tag against version.toml
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          actual=$(python scripts/version.py show --json | python -c 'import json,sys; print(json.load(sys.stdin)["version"])')
+          test "$tag" = "$actual" || {
+            echo "::error::version.toml says $actual, the tag says $tag"
+            exit 1
+          }
+
+      - name: Configure the kit read token
+        shell: bash
+        env:
+          KITS_READ_TOKEN: ${{ secrets.KITS_READ_TOKEN }}
+        run: |
+          if [ -z "$KITS_READ_TOKEN" ]; then
+            echo "::error::KITS_READ_TOKEN is not set; the kit git dependency cannot be fetched"
+            exit 1
+          fi
+          git config --global url."https://x-access-token:${KITS_READ_TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      - name: Read the pinned channel
+        shell: bash
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+        id: toolchain
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo build --release
+        run: cargo build --release --locked
+
+      - name: Stage, zip and install
+        run: |
+          $version = (python scripts/version.py show --json | ConvertFrom-Json).version
+          $stage = "dist/warp-notes-$version-windows-x64"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item target/release/warp-notes.exe $stage
+          if (Test-Path packaging/windows/settings) {
+            Copy-Item packaging/windows/settings $stage -Recurse
+          }
+          Compress-Archive -Path "$stage/*" -DestinationPath "$stage.zip"
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) {
+            choco install innosetup -y --no-progress
+          }
+          iscc "/DMyAppVersion=$version" "/DMySourceDir=$stage" "/DMyOutputDir=dist" "packaging/windows/warp-notes.iss"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-windows
+          path: |
+            dist/*.zip
+            dist/*-setup-x64.exe
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Write checksums
+        run: |
+          cd artifacts
+          sha256sum * > SHA256SUMS
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: warp-notes ${{ github.ref_name }}
+          body: |
+            Linux bundle (binary, desktop entry, hicolor icons) and the Windows
+            portable zip plus the Inno Setup installer.
+          files: |
+            artifacts/*

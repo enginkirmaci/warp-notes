@@ -1,0 +1,11 @@
+# Build and packaging facts read by the app's own build and release tooling.
+[app]
+package = "warp-notes"
+icon_prefix = "warpnotes"
+scalable_svg = "packaging/linux/icons/warpnotes.svg"
+notes = """
+Per-repo markdown notes with a live editor. Warp Station launches it with
+--store, --repo/--root and an optional --note; a standalone launch roots at the
+shared store. Reads ~/notes (notes_store_path overrides); its settings and the
+suite's shared logs live under ~/.warp.
+"""

@@ -1,0 +1,26 @@
+#!/bin/sh
+# Bump PATCH on every commit and stage the derived Cargo files, so a commit
+# carries the version it ships. scripts/version.py owns the edit; this hook is
+# only the trigger. WARP_VERSION_SKIP=1 skips it (amend, rebase, emergencies).
+
+set -eu
+
+[ "${WARP_VERSION_SKIP:-0}" = "1" ] && exit 0
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+
+if command -v python3 >/dev/null 2>&1; then
+    py=python3
+elif command -v python >/dev/null 2>&1; then
+    py=python
+else
+    echo "version: python3 not found; cannot bump the app version" >&2
+    exit 1
+fi
+
+if ! "$py" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)'; then
+    echo "version: Python 3.11+ is required (tomllib)" >&2
+    exit 1
+fi
+
+exec "$py" "$root/scripts/version.py" pre-commit
