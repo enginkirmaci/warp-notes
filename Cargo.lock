@@ -8288,7 +8288,7 @@ dependencies = [
 
 [[package]]
 name = "warp-notes"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -8310,7 +8310,7 @@ dependencies = [
 [[package]]
 name = "warpui-kit-build"
 version = "0.1.11"
-source = "git+https://github.com/enginkirmaci/warp-suite?tag=kits-v0.1.11#4a2834a502c7edb5781cae82f9103c84fb914bb5"
+source = "git+https://github.com/enginkirmaci/warp-suite?tag=kits-v0.1.11#3e04dae20fb6916c3389e2e497c12ea6804b966d"
 dependencies = [
  "winresource",
 ]
@@ -8318,7 +8318,7 @@ dependencies = [
 [[package]]
 name = "warpui-kit-core"
 version = "0.1.11"
-source = "git+https://github.com/enginkirmaci/warp-suite?tag=kits-v0.1.11#4a2834a502c7edb5781cae82f9103c84fb914bb5"
+source = "git+https://github.com/enginkirmaci/warp-suite?tag=kits-v0.1.11#3e04dae20fb6916c3389e2e497c12ea6804b966d"
 dependencies = [
  "async-channel",
  "futures-util",
@@ -8334,7 +8334,7 @@ dependencies = [
 [[package]]
 name = "warpui-kit-diff"
 version = "0.1.11"
-source = "git+https://github.com/enginkirmaci/warp-suite?tag=kits-v0.1.11#4a2834a502c7edb5781cae82f9103c84fb914bb5"
+source = "git+https://github.com/enginkirmaci/warp-suite?tag=kits-v0.1.11#3e04dae20fb6916c3389e2e497c12ea6804b966d"
 dependencies = [
  "gpui-kit",
  "gpui-pre",
@@ -8346,7 +8346,7 @@ dependencies = [
 [[package]]
 name = "warpui-kit-markdown"
 version = "0.1.11"
-source = "git+https://github.com/enginkirmaci/warp-suite?tag=kits-v0.1.11#4a2834a502c7edb5781cae82f9103c84fb914bb5"
+source = "git+https://github.com/enginkirmaci/warp-suite?tag=kits-v0.1.11#3e04dae20fb6916c3389e2e497c12ea6804b966d"
 dependencies = [
  "anyhow",
  "gpui-kit",
@@ -8362,7 +8362,7 @@ dependencies = [
 [[package]]
 name = "warpui-kit-platform"
 version = "0.1.11"
-source = "git+https://github.com/enginkirmaci/warp-suite?tag=kits-v0.1.11#4a2834a502c7edb5781cae82f9103c84fb914bb5"
+source = "git+https://github.com/enginkirmaci/warp-suite?tag=kits-v0.1.11#3e04dae20fb6916c3389e2e497c12ea6804b966d"
 dependencies = [
  "anyhow",
  "gpui-kit",
