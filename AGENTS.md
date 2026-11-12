@@ -113,3 +113,18 @@ cargo build -p warp-notes
 - Add a permanent delete path outside the Trash dialog; removal goes through
   `<store>/.warp-notes/trash` first.
 - Add a per-app build script or installer; the suite's `scripts/` owns those.
+
+## Public history and secrets
+
+- Never commit a token, PAT, password, private IP, Wi-Fi SSID, home path or
+  personal email in file content. Use placeholders in docs and examples.
+- A commit's author and committer are public. Use a public identity (the
+  GitHub noreply address), never a private address.
+- Pass credentials through GitHub Actions secrets only; never echo or log
+  them.
+- Before publishing, force-pushing or adding a remote, run this over the
+  current tree and every ref:
+
+  ```sh
+  git grep -n -i -E '192\.168\.[0-9]+\.[0-9]+|10\.[0-9]+\.[0-9]+\.[0-9]+|/home/[a-z]+|ghp_|gho_|github_pat_|ghs_' -- .
+  ```
