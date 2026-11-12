@@ -21,6 +21,14 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Install GPUI build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config jq \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev \
+            libvulkan-dev libfontconfig1-dev
+
       - name: Check the tag against version.toml
         run: |
           tag="${GITHUB_REF_NAME#v}"
