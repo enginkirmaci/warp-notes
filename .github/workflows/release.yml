@@ -126,7 +126,8 @@ jobs:
       - name: Stage, zip and install
         run: |
           $version = (python scripts/version.py show --json | ConvertFrom-Json).version
-          $stage = "dist/warp-notes-$version-windows-x64"
+          $stage = Join-Path $PWD "dist/warp-notes-$version-windows-x64"
+          $out = Join-Path $PWD "dist"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item target/release/warp-notes.exe $stage
           if (Test-Path packaging/windows/settings) {
@@ -136,7 +137,7 @@ jobs:
           if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) {
             choco install innosetup -y --no-progress
           }
-          iscc "/DMyAppVersion=$version" "/DMySourceDir=$stage" "/DMyOutputDir=dist" "packaging/windows/warp-notes.iss"
+          iscc "/DMyAppVersion=$version" "/DMySourceDir=$stage" "/DMyOutputDir=$out" "packaging/windows/warp-notes.iss"
 
       - uses: actions/upload-artifact@v7
         with:
