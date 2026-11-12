@@ -90,10 +90,9 @@ Multi-instance is free: every launch opens its own window.
 cargo build --release
 ```
 
-Packaging lives in the suite: `scripts/build.sh --app warp-notes` (Linux) and
-`scripts/build.ps1 -App warp-notes` (Windows) in
-[warp-suite](https://github.com/enginkirmaci/warp-suite). This directory only
-carries the assets under `packaging/`.
+Packaging lives in this repository's `release` workflow: the tag job builds
+the Linux bundle (binary, desktop entry, icons) and the Windows zip and
+installer from the assets under `packaging/`.
 
 ## Sibling deps
 
