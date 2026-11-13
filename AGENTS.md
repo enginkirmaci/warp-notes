@@ -88,7 +88,14 @@ cargo build -p warp-notes
 - The tree's cursor belongs to `tree_focus`: arrows scroll it into view and
   its raised emphasis only shows while the tree owns the keys. A field or the
   editor keeps its own arrows; do not add a window-level tree key handler.
-- The capture hook is `WARP_NOTES_PAGE=settings`.
+- The keyboard sheet is `warpui_kit_core::shortcuts::dialog`; `Ctrl+/` opens
+  it and `?` is the alias while no text field or the editor owns the keys. The
+  card takes the focus and every close returns it to `page_focus`.
+- `warpui_kit_core::pane_nav` carries the two panes: the tree's `Tab` focuses
+  the editor, `Shift+Tab` is a no-op at the row start, and the editor keeps
+  `Tab`/`Shift+Tab` for indent/outdent — `Ctrl+Shift+E` stays the way back.
+- The capture hooks are `WARP_NOTES_PAGE=settings|about` and
+  `WARP_NOTES_SHORTCUTS=1`, which opens the keyboard sheet on launch.
 
 ## App-specific contracts
 

@@ -22,7 +22,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use warpui_kit_core::{motion, shell};
+use warpui_kit_core::{motion, pane_nav, shell};
 use warpui_kit_markdown::live::{InlineObjectKind, LiveLineKind};
 use warpui_kit_markdown::{
     LiveEditor, LiveEditorEvent, LiveEditorState, apply, note_key, parse_document,
@@ -53,23 +53,6 @@ enum Section {
 enum ListScope {
     All,
     Pinned,
-}
-
-/// The shortcut sheet's two tabs: the tree and the editor.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum ShortcutGroup {
-    #[default]
-    Tree,
-    Editor,
-}
-
-impl ShortcutGroup {
-    fn rows(self) -> &'static [(&'static str, &'static str)] {
-        match self {
-            Self::Tree => TREE_SHORTCUTS,
-            Self::Editor => EDITOR_SHORTCUTS,
-        }
-    }
 }
 
 /// The launch configuration the CLI parsed: the store root (Warp Station
@@ -140,31 +123,60 @@ const SEARCH_RESULTS_ROWS: usize = 200;
 
 const SHOW_TOOLTIPS: bool = true;
 
-/// The tree tab: cursor moves, file actions and the list toggle.
+/// The tree group: cursor moves, file actions and the list toggle.
 const TREE_SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl+Shift+E", "Focus the tree"),
     ("Up / Down", "Move the tree cursor"),
+    ("Home / End", "First / last row"),
     ("Left / Right", "Collapse / expand"),
+    ("Tab", "Focus the editor"),
     ("Enter", "Open the selected entry"),
     ("F2", "Rename"),
-    ("Delete", "Move to Trash"),
+    ("Delete / Backspace", "Move to Trash"),
     ("Ctrl+D", "Duplicate"),
+    ("Shift+F10", "Row actions menu"),
     ("Ctrl+N", "New note"),
     ("Ctrl+\\", "Toggle the list"),
 ];
 
-/// The editor tab: quick open, tabs and history, search, and the note itself.
+/// The editor group: quick open, tabs and history, search, and the note
+/// itself. The editor keeps `Tab`/`Shift+Tab` for indent/outdent, so the way
+/// back to the tree is `Ctrl+Shift+E`.
 const EDITOR_SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl+P", "Quick open"),
     ("Ctrl+K", "Search notes"),
     ("Ctrl+Shift+F", "Full search results"),
     ("Ctrl+Shift+B", "Outline and links"),
+    ("Ctrl+F", "Find in note"),
     ("Ctrl+S", "Save now"),
     ("Ctrl+W", "Close the active tab"),
     ("Ctrl+Tab", "Next tab"),
+    ("Ctrl+Shift+Tab", "Previous tab"),
+    ("Ctrl+1…9", "Jump to a tab"),
     ("Alt+Left / Right", "Back / forward"),
-    ("Ctrl+/", "This cheat sheet"),
+    ("Ctrl+,", "Settings"),
+    ("Tab / Shift+Tab", "Indent / outdent in the editor"),
+    ("Esc", "Close the open layer"),
+    ("? / Ctrl+/", "This cheat sheet"),
 ];
+
+/// The shared card's content: the two groups the window's handlers answer to.
+/// The rows live here once, next to the constants the reports and the probe
+/// check. A field-local key map (find, quick open, prompt) keeps its own keys
+/// in its element, so the sheet stays the window's map.
+fn shortcut_groups() -> Vec<warpui_kit_core::shortcuts::Group> {
+    [("Tree", TREE_SHORTCUTS), ("Editor", EDITOR_SHORTCUTS)]
+        .into_iter()
+        .map(|(title, rows)| {
+            warpui_kit_core::shortcuts::Group::new(
+                title,
+                rows.iter()
+                    .map(|(keys, label)| ((*keys).into(), (*label).into()))
+                    .collect(),
+            )
+        })
+        .collect()
+}
 
 /// What the status bar counts over the open note. Computed once per document
 /// revision, not once per frame: the scan is the length of the note.
@@ -390,10 +402,14 @@ pub struct NotesPage {
     find: Entity<InputState>,
     find_hits: Vec<std::ops::Range<usize>>,
     find_index: usize,
-    /// Ctrl+/ shortcut cheat sheet.
+    /// The shortcut sheet is up.
     shortcut_open: bool,
-    /// The cheat sheet's selected tab: the tree or the editor.
-    shortcut_group: ShortcutGroup,
+    /// The sheet card's focus, tracked by the card: opening it takes the
+    /// keyboard off the tree/editor underneath.
+    shortcut_focus: gpui::FocusHandle,
+    /// The focusable panes on screen this frame, left to right, for the
+    /// `Tab`/`Shift+Tab` pane moves. Cleared at the top of the page render.
+    pane_nav: Rc<pane_nav::PaneNav>,
     /// The live markdown editor.
     editor: Entity<LiveEditorState>,
     /// The debounced autosave: every edit bumps this, and only the task from
@@ -552,6 +568,11 @@ impl NotesPage {
             cx.notify();
         })
         .detach();
+        let shortcut_focus = cx.focus_handle();
+        // E2E hook: WARP_NOTES_SHORTCUTS=1 opens the keyboard sheet on launch
+        // (a hidden window takes no pointer, so a capture needs the card to
+        // open itself). Read once here, like WARP_NOTES_PAGE.
+        let shortcut_open = matches!(std::env::var("WARP_NOTES_SHORTCUTS").as_deref(), Ok("1"));
         let mut page = Self {
             store_root,
             store_pinned,
@@ -609,8 +630,9 @@ impl NotesPage {
             find,
             find_hits: Vec::new(),
             find_index: 0,
-            shortcut_open: false,
-            shortcut_group: ShortcutGroup::Tree,
+            shortcut_open,
+            shortcut_focus,
+            pane_nav: Rc::new(pane_nav::PaneNav::new()),
             editor,
             save_epoch: 0,
             create_open: false,
@@ -698,7 +720,11 @@ impl NotesPage {
         })
         .detach();
         page.set_note_window_title(window);
-        if page.open_note.is_none() {
+        if page.shortcut_open {
+            // the card owns the keys from the first frame, over whatever the
+            // launch opened underneath
+            window.focus(&page.shortcut_focus, cx);
+        } else if page.open_note.is_none() {
             window.focus(&page.page_focus, cx);
         }
         let weak = cx.weak_entity();
@@ -1246,7 +1272,7 @@ impl NotesPage {
         self.search_results_open = false;
         self.palette_open = false;
         self.trash_open = false;
-        self.shortcut_open = false;
+        self.close_shortcuts(window, cx);
         self.context_open = false;
         self.find_open = false;
         self.editor
@@ -1379,7 +1405,7 @@ impl NotesPage {
         self.prompt = None;
         self.row_menu = None;
         self.trash_open = false;
-        self.shortcut_open = false;
+        self.close_shortcuts(window, cx);
         self.search_results_open = false;
         self.palette_input.update(cx, |field, cx| {
             field.set_value(String::new(), window, cx);
@@ -1844,7 +1870,7 @@ impl NotesPage {
         self.search_selected = 0;
         self.palette_open = false;
         self.trash_open = false;
-        self.shortcut_open = false;
+        self.close_shortcuts(window, cx);
         self.search.update(cx, |field, cx| field.focus(window, cx));
         cx.notify();
     }
@@ -2518,6 +2544,18 @@ impl NotesPage {
         self.tree_focus.clone()
     }
 
+    /// The page root's focus handle — for the sheet's focus-return probe.
+    #[doc(hidden)]
+    pub fn page_focus_handle(&self) -> gpui::FocusHandle {
+        self.page_focus.clone()
+    }
+
+    /// The sheet card's focus handle — for the focus-guard probe.
+    #[doc(hidden)]
+    pub fn shortcut_focus_handle(&self) -> gpui::FocusHandle {
+        self.shortcut_focus.clone()
+    }
+
     /// Whether the tree currently owns the keyboard, for the focus-emphasis
     /// probe.
     #[doc(hidden)]
@@ -3087,6 +3125,9 @@ fn age_label(modified: Option<std::time::SystemTime>) -> String {
 
 impl Render for NotesPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        // the panes register themselves from the render that draws them; the
+        // order starts empty so a hidden pane is not a Tab stop this frame
+        self.pane_nav.begin_frame();
         if let Some(requested) = self.store_path_pending.take() {
             self.apply_store_path(requested, window, cx);
         }
@@ -3111,7 +3152,41 @@ impl Render for NotesPage {
             .bg(theme::background())
             .track_focus(&page_focus)
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                let control = event.keystroke.modifiers.control;
+                let modifiers = event.keystroke.modifiers;
+                let control = modifiers.control;
+                let key = event.keystroke.key.as_str();
+                // `?` and Ctrl+/ are the sheet. Ctrl+/ stays global (it is
+                // the chord the app has always answered); a bare `?` would be
+                // typing in a field or the editor, so it only opens when no
+                // text surface owns the keys.
+                let in_field = window
+                    .context_stack()
+                    .iter()
+                    .any(|context| context.contains("Input"));
+                let help_key = !modifiers.alt
+                    && !modifiers.platform
+                    && (event.keystroke.key_char.as_deref() == Some("?")
+                        || key == "?"
+                        || (key == "/" && (modifiers.shift || control)));
+                if help_key && (control || !in_field) {
+                    if this.shortcut_open {
+                        this.close_shortcuts(window, cx);
+                    } else {
+                        this.open_shortcuts(window, cx);
+                    }
+                    cx.stop_propagation();
+                    return;
+                }
+                // The card owns the keyboard while it is up: no list cursor,
+                // no editor key and no global chord behind it. Escape is the
+                // one key it answers besides the help chord.
+                if this.shortcut_open {
+                    if key == "escape" {
+                        this.close_shortcuts(window, cx);
+                    }
+                    cx.stop_propagation();
+                    return;
+                }
                 if control && event.keystroke.key == "s" {
                     this.save_current(cx);
                     cx.stop_propagation();
@@ -3175,10 +3250,6 @@ impl Render for NotesPage {
                     let delta = if event.keystroke.key == "left" { -1 } else { 1 };
                     this.go_history(delta, window, cx);
                     cx.stop_propagation();
-                } else if control && event.keystroke.key == "/" {
-                    this.shortcut_open = !this.shortcut_open;
-                    cx.notify();
-                    cx.stop_propagation();
                 } else if control && event.keystroke.key == "," {
                     this.set_section(
                         match this.section {
@@ -3204,10 +3275,6 @@ impl Render for NotesPage {
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.create_open {
                     this.create_open = false;
-                    cx.notify();
-                    cx.stop_propagation();
-                } else if event.keystroke.key == "escape" && this.shortcut_open {
-                    this.shortcut_open = false;
                     cx.notify();
                     cx.stop_propagation();
                 }
@@ -4502,153 +4569,41 @@ impl NotesPage {
             .into_any_element()
     }
 
-    fn set_shortcut_group(&mut self, group: ShortcutGroup, cx: &mut Context<Self>) {
-        if self.shortcut_group != group {
-            self.shortcut_group = group;
-            cx.notify();
+    /// Opens the keyboard sheet and gives it the keys, so no list or editor
+    /// moves under the card.
+    fn open_shortcuts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.shortcut_open {
+            return;
         }
+        self.shortcut_open = true;
+        window.focus(&self.shortcut_focus, cx);
+        cx.notify();
+    }
+
+    /// Closes the sheet and hands the keyboard back to the page root; a
+    /// focused element that left the tree would otherwise leave the keys dead
+    /// until the next click.
+    fn close_shortcuts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.shortcut_open {
+            return;
+        }
+        self.shortcut_open = false;
+        window.focus(&self.page_focus, cx);
+        cx.notify();
     }
 
     fn render_shortcuts(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let mut rows = div().flex().flex_col().gap_1();
-        for (keys, label) in self.shortcut_group.rows() {
-            rows = rows.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_3()
-                    .rounded(px(4.))
-                    .px_2()
-                    .py_1()
-                    .child(
-                        div()
-                            .w(px(118.))
-                            .flex_shrink_0()
-                            .font_family(SharedString::from(theme::code_font()))
-                            .text_size(px(theme::font_mono_meta()))
-                            .text_color(theme::text_dim())
-                            .child(*keys),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(px(theme::font_body()))
-                            .text_color(theme::text())
-                            .child(*label),
-                    ),
-            );
-        }
-        let choices = vec![
-            warpui_kit_core::settings::Choice::new(
-                "tree",
-                "Tree",
-                self.shortcut_group == ShortcutGroup::Tree,
-            ),
-            warpui_kit_core::settings::Choice::new(
-                "editor",
-                "Editor",
-                self.shortcut_group == ShortcutGroup::Editor,
-            ),
-        ];
+        let groups = shortcut_groups();
         let page = cx.entity();
-        let card = div()
-            .id("shortcut-card")
-            .debug_selector(|| "shortcut-card".into())
-            .role(gpui::Role::Dialog)
-            .occlude()
-            .w(px(theme::PROMPT_WIDTH + 60.))
-            .max_h(px(600.))
-            .rounded(px(10.))
-            .border_1()
-            .border_color(theme::line_strong())
-            .bg(theme::popup())
-            .shadow_lg()
-            .p_4()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(
-                div()
-                    .text_size(px(theme::font_brand()))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme::text())
-                    .child("Keyboard"),
-            )
-            .child(
-                div()
-                    .text_size(px(theme::font_meta()))
-                    .text_color(theme::text_muted())
-                    .child("The editor keeps its own arrow keys while it has focus."),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .child(warpui_kit_core::settings::segmented(
-                        "shortcut-group",
-                        choices,
-                        move |key, _, cx| {
-                            let group = if key.as_ref() == "editor" {
-                                ShortcutGroup::Editor
-                            } else {
-                                ShortcutGroup::Tree
-                            };
-                            page.update(cx, |this, cx| this.set_shortcut_group(group, cx));
-                        },
-                    )),
-            )
-            .child(
-                div()
-                    .id("shortcut-list")
-                    .max_h(px(430.))
-                    .overflow_y_scroll()
-                    .child(rows),
-            )
-            .child(
-                div().flex().flex_row().justify_end().child(
-                    div()
-                        .id("shortcut-close")
-                        .debug_selector(|| "shortcut-close".into())
-                        .a11y_button("Close keyboard help")
-                        .cursor_pointer()
-                        .rounded(px(6.))
-                        .h(px(theme::scaled(shell::CONTROL_HEIGHT) - 8.))
-                        .px_3()
-                        .flex()
-                        .items_center()
-                        .bg(theme::accent())
-                        .text_color(theme::on_accent())
-                        .text_size(px(theme::font_control()))
-                        .font_weight(FontWeight::MEDIUM)
-                        .hover(|style| style.opacity(0.9))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.shortcut_open = false;
-                            cx.notify();
-                        }))
-                        .child("Close"),
-                ),
-            );
-        div()
-            .id("shortcut-scrim")
-            .absolute()
-            .inset_0()
-            .occlude()
-            .bg(theme::SCRIM)
-            .flex()
-            .items_center()
-            .justify_center()
-            .p_4()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    this.shortcut_open = false;
-                    cx.notify();
-                }),
-            )
-            .child(card)
-            .into_any_element()
+        warpui_kit_core::shortcuts::dialog(
+            "shortcut-sheet",
+            "Keyboard shortcuts",
+            &groups,
+            &self.shortcut_focus,
+            move |_, window, cx| {
+                page.update(cx, |this, cx| this.close_shortcuts(window, cx));
+            },
+        )
     }
 
     fn render_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -5559,6 +5514,8 @@ impl NotesPage {
     fn render_tree(&mut self, window: &Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let can_create = self.notes_scope.is_some() || !self.tree.is_empty();
         let (notes_count, pinned_count) = self.list_counts();
+        // the left pane of the Tab order, only while the list is drawn
+        self.pane_nav.register(&self.tree_focus);
         let tree_focus = self.tree_focus.clone();
         let tree = shell::list_pane(self.prefs.list_width)
             .id("notes-sidebar")
@@ -6135,6 +6092,18 @@ impl NotesPage {
         cx: &mut Context<Self>,
     ) {
         let key = event.keystroke.key.as_str();
+        // The tree keeps Left/Right for collapse/expand, so only Tab is a
+        // pane move. It is the row start: Shift+Tab goes nowhere, and both
+        // are consumed so the key never wanders into a focus chain.
+        if key == "tab"
+            && let Some(dir) = pane_nav::direction(event)
+        {
+            if dir == pane_nav::PaneDir::Right {
+                self.pane_nav.move_from(&self.tree_focus, dir, window, cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
         if event.keystroke.modifiers.alt && matches!(key, "left" | "right") {
             let delta = if key == "left" { -1 } else { 1 };
             self.go_history(delta, window, cx);
@@ -6802,6 +6771,10 @@ impl NotesPage {
                 })
                 .into_any_element();
         }
+        // the right pane of the Tab order, only while the live editor is
+        // drawn (the empty state above has no input to land in)
+        let editor_focus = self.editor.read(cx).focus_handle().clone();
+        self.pane_nav.register(&editor_focus);
         div()
             .id("notes-live")
             .debug_selector(|| "notes-live".into())
@@ -6820,6 +6793,43 @@ impl NotesPage {
 mod tests {
     use super::{PaletteItem, fuzzy_score, match_ranges, order_palette_items};
     use std::path::PathBuf;
+
+    #[test]
+    fn the_shortcut_sheet_carries_the_tree_and_editor_groups() {
+        let groups = super::shortcut_groups();
+        assert_eq!(groups.len(), 2, "the two groups the handlers serve");
+        assert_eq!(groups[0].title.as_ref(), "Tree");
+        assert_eq!(groups[1].title.as_ref(), "Editor");
+        for group in &groups {
+            let mut seen = std::collections::HashSet::new();
+            for (keys, label) in &group.rows {
+                assert!(!keys.is_empty(), "{}: a row needs a key", group.title);
+                assert!(!label.is_empty(), "{}: {keys} needs a label", group.title);
+                assert!(
+                    seen.insert(keys.to_string()),
+                    "{} repeats {keys}",
+                    group.title
+                );
+            }
+        }
+        let keys = |group: usize| {
+            groups[group]
+                .rows
+                .iter()
+                .map(|(keys, _)| keys.to_string())
+                .collect::<Vec<_>>()
+        };
+        let tree = keys(0);
+        // Tab is the tree's pane move; arrows stay the tree's own.
+        assert!(tree.iter().any(|key| key == "Tab"));
+        assert!(tree.iter().any(|key| key == "Left / Right"));
+        // The editor keeps Tab/Shift+Tab, so Ctrl+Shift+E is the way back.
+        let editor = keys(1);
+        assert!(editor.iter().any(|key| key == "Ctrl+Shift+Tab"));
+        assert!(editor.iter().any(|key| key == "? / Ctrl+/"));
+        assert!(editor.iter().any(|key| key == "Ctrl+F"));
+        assert!(editor.iter().any(|key| key == "Tab / Shift+Tab"));
+    }
 
     #[test]
     fn quick_open_orders_pinned_then_recent_then_the_rest() {

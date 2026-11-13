@@ -1994,12 +1994,156 @@ fn search_selects_with_arrows(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn shortcut_sheet_opens_and_closes(cx: &mut TestAppContext) {
+fn shortcut_sheet_opens_closes_and_owns_the_keys(cx: &mut TestAppContext) {
     let _guard = hold_home();
     cx.update(gpui_kit::init);
     cx.update(theme::apply_kit_theme);
     let home = temp_home("warpnotes-probe-shortcuts");
-    let (handle, _page) = open_page(
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, _| window.activate_window());
+    cx.run_until_parked();
+    let draw = |cx: &mut VisualTestContext| {
+        // one draw dispatches focus events, the next renders their effect
+        for _ in 0..2 {
+            cx.update(|window, cx| drop(window.draw(cx)));
+            cx.run_until_parked();
+        }
+    };
+    draw(cx);
+
+    click(cx, "note-item-note.md");
+    cx.simulate_keystrokes("ctrl-shift-e");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("down");
+    cx.run_until_parked();
+    draw(cx);
+    let cursor = page
+        .read_with(cx, |page, _| page.tree_cursor_for_probe())
+        .expect("the focused tree parked a cursor");
+
+    // Ctrl+/ opens the shared card, which carries the kit's selectors.
+    cx.simulate_keystrokes("ctrl-/");
+    cx.run_until_parked();
+    draw(cx);
+    assert!(
+        bounds(cx, "shortcut-sheet-card").is_some(),
+        "Ctrl+/ opens the shared card"
+    );
+    assert!(
+        bounds(cx, "shortcut-sheet-list").is_some(),
+        "the body is the kit's list"
+    );
+    assert!(
+        bounds(cx, "shortcut-sheet-close").is_some(),
+        "the close button is the kit's"
+    );
+    let sheet_focus = page.read_with(cx, |page, _| page.shortcut_focus_handle());
+    assert!(
+        cx.update(|window, _| sheet_focus.is_focused(window)),
+        "the card takes keyboard focus while it is up"
+    );
+
+    // The card takes the keyboard: Down must not move the tree under it.
+    cx.simulate_keystrokes("down");
+    cx.run_until_parked();
+    draw(cx);
+    assert_eq!(
+        page.read_with(cx, |page, _| page.tree_cursor_for_probe()),
+        Some(cursor.clone()),
+        "the tree must not move while the sheet has the keys"
+    );
+
+    // Escape closes first and hands the keys to the page root, not the tree.
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    draw(cx);
+    assert!(bounds(cx, "shortcut-sheet-card").is_none());
+    let page_focus = page.read_with(cx, |page, _| page.page_focus_handle());
+    assert!(
+        cx.update(|window, _| page_focus.is_focused(window)),
+        "Escape returns focus to the page root"
+    );
+    cx.simulate_keystrokes("down");
+    cx.run_until_parked();
+    draw(cx);
+    assert_eq!(
+        page.read_with(cx, |page, _| page.tree_cursor_for_probe()),
+        Some(cursor),
+        "closing the sheet returns focus to the page root"
+    );
+
+    // `?` is the alias while no text surface owns the keys.
+    cx.simulate_keystrokes("?");
+    cx.run_until_parked();
+    draw(cx);
+    assert!(
+        bounds(cx, "shortcut-sheet-card").is_some(),
+        "? opens the sheet"
+    );
+
+    // The kit close button and a scrim press are the two close paths.
+    click(cx, "shortcut-sheet-close");
+    assert!(bounds(cx, "shortcut-sheet-card").is_none());
+    assert!(
+        cx.update(|window, _| page_focus.is_focused(window)),
+        "the close button returns focus to the page root"
+    );
+    cx.simulate_keystrokes("ctrl-/");
+    cx.run_until_parked();
+    draw(cx);
+    let scrim = bounds(cx, "shortcut-sheet-dialog").expect("the dialog fills the window");
+    cx.simulate_click(
+        Point {
+            x: scrim.origin.x + px(8.),
+            y: scrim.origin.y + px(8.),
+        },
+        Modifiers::default(),
+    );
+    cx.run_until_parked();
+    draw(cx);
+    assert!(
+        bounds(cx, "shortcut-sheet-card").is_none(),
+        "a scrim press closes the shared card"
+    );
+    assert!(
+        cx.update(|window, _| page_focus.is_focused(window)),
+        "a scrim press returns focus to the page root"
+    );
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn shortcut_env_hook_opens_the_sheet(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-shortcuts-env");
+    // WARP_NOTES_SHORTCUTS=1 is read once at window construction. The lock
+    // above serializes every page-building scenario, so the process-wide
+    // variable cannot leak into another test's window.
+    struct HookEnv;
+    impl Drop for HookEnv {
+        fn drop(&mut self) {
+            // SAFETY: the HOME lock keeps other page-building scenarios out;
+            // no other thread reads this variable while it is set.
+            unsafe { std::env::remove_var("WARP_NOTES_SHORTCUTS") };
+        }
+    }
+    // SAFETY: as above.
+    unsafe { std::env::set_var("WARP_NOTES_SHORTCUTS", "1") };
+    let _hook = HookEnv;
+    let (handle, page) = open_page(
         cx,
         Launch {
             store_root: Some(home.join("notes")),
@@ -2011,12 +2155,164 @@ fn shortcut_sheet_opens_and_closes(cx: &mut TestAppContext) {
     let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
     cx.run_until_parked();
     cx.update(|window, cx| drop(window.draw(cx)));
+    assert!(
+        bounds(cx, "shortcut-sheet-card").is_some(),
+        "the hook opens the sheet on launch"
+    );
+    let sheet_focus = page.read_with(cx, |page, _| page.shortcut_focus_handle());
+    assert!(
+        cx.update(|window, _| sheet_focus.is_focused(window)),
+        "the launched sheet holds the keys from the first frame"
+    );
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+    assert!(
+        bounds(cx, "shortcut-sheet-card").is_none(),
+        "the launched sheet closes like any other"
+    );
+
+    drop(_hook);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn tab_moves_between_the_tree_and_the_editor(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-panes");
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, _| window.activate_window());
+    cx.run_until_parked();
+    let draw = |cx: &mut VisualTestContext| {
+        for _ in 0..2 {
+            cx.update(|window, cx| drop(window.draw(cx)));
+            cx.run_until_parked();
+        }
+    };
+    draw(cx);
+
+    // With no note open the editor pane is not drawn, so Tab from the tree
+    // has nowhere to go and the tree keeps the keys.
+    cx.simulate_keystrokes("ctrl-shift-e");
+    cx.run_until_parked();
+    draw(cx);
+    assert!(
+        page.read_with(cx, |page, _| page.tree_focused_for_probe()),
+        "Ctrl+Shift+E focuses the tree"
+    );
+    cx.simulate_keystrokes("tab");
+    cx.run_until_parked();
+    draw(cx);
+    assert!(
+        page.read_with(cx, |page, _| page.tree_focused_for_probe()),
+        "with no editor drawn, Tab is not a pane move"
+    );
 
     click(cx, "note-item-note.md");
+    cx.simulate_keystrokes("ctrl-shift-e");
+    cx.run_until_parked();
+    draw(cx);
+
+    // The tree's row start: Shift+Tab stays there.
+    cx.simulate_keystrokes("shift-tab");
+    cx.run_until_parked();
+    draw(cx);
+    assert!(
+        page.read_with(cx, |page, _| page.tree_focused_for_probe()),
+        "Shift+Tab at the tree's row start is a no-op"
+    );
+
+    // Tab is the tree's pane move; the editor now owns the keys.
+    cx.simulate_keystrokes("tab");
+    cx.run_until_parked();
+    draw(cx);
+    assert!(
+        !page.read_with(cx, |page, _| page.tree_focused_for_probe()),
+        "Tab moves the keys from the tree to the editor"
+    );
+    let before = page.read_with(cx, |page, cx| page.editor_value(cx));
+    cx.simulate_input("x");
+    cx.run_until_parked();
+    draw(cx);
+    let typed = page.read_with(cx, |page, cx| page.editor_value(cx));
+    assert_ne!(
+        before, typed,
+        "the editor, not a dead void, received the keys after Tab"
+    );
+
+    // The editor keeps Tab/Shift+Tab for indent/outdent: neither leaves for
+    // the tree, and Ctrl+Shift+E stays the way back.
+    cx.simulate_keystrokes("tab");
+    cx.run_until_parked();
+    draw(cx);
+    let indented = page.read_with(cx, |page, cx| page.editor_value(cx));
+    assert_ne!(typed, indented, "Tab indents in the live editor");
+    assert!(
+        !page.read_with(cx, |page, _| page.tree_focused_for_probe()),
+        "the editor's Tab does not jump to the tree"
+    );
+    cx.simulate_keystrokes("shift-tab");
+    cx.run_until_parked();
+    draw(cx);
+    let outdented = page.read_with(cx, |page, cx| page.editor_value(cx));
+    assert_ne!(indented, outdented, "Shift+Tab outdents in the live editor");
+    assert!(
+        !page.read_with(cx, |page, _| page.tree_focused_for_probe()),
+        "the editor's Shift+Tab does not jump to the tree"
+    );
+    cx.simulate_keystrokes("ctrl-shift-e");
+    cx.run_until_parked();
+    draw(cx);
+    assert!(
+        page.read_with(cx, |page, _| page.tree_focused_for_probe()),
+        "Ctrl+Shift+E is the way back to the tree"
+    );
+
+    // `?` is text in the editor, not the sheet.
+    cx.simulate_keystrokes("tab");
+    cx.run_until_parked();
+    draw(cx);
+    assert!(
+        !page.read_with(cx, |page, _| page.tree_focused_for_probe()),
+        "Tab moved back into the editor"
+    );
+    cx.simulate_input("?");
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+    assert!(
+        bounds(cx, "shortcut-sheet-card").is_none(),
+        "? typed in the editor stays text"
+    );
+
+    // Opening from the editor takes the keys off it as well.
     cx.simulate_keystrokes("ctrl-/");
-    assert!(bounds(cx, "shortcut-card").is_some());
-    click(cx, "shortcut-close");
-    assert!(bounds(cx, "shortcut-card").is_none());
+    cx.run_until_parked();
+    draw(cx);
+    let parked = page.read_with(cx, |page, cx| page.editor_value(cx));
+    cx.simulate_input("y");
+    cx.run_until_parked();
+    draw(cx);
+    assert_eq!(
+        page.read_with(cx, |page, cx| page.editor_value(cx)),
+        parked,
+        "the sheet keeps the editor from typing under it"
+    );
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    draw(cx);
+    assert!(bounds(cx, "shortcut-sheet-card").is_none());
 
     let _ = std::fs::remove_dir_all(&home);
 }
