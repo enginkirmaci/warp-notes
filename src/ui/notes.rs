@@ -5236,7 +5236,11 @@ impl NotesPage {
                         ))
                         .child(crate::ui::window_button(
                             "notes-context-toggle",
-                            "icons/icon-panel-right.svg",
+                            if self.context_open {
+                                "icons/icon-panel-right-close.svg"
+                            } else {
+                                "icons/icon-panel-right-open.svg"
+                            },
                             theme::raised().into(),
                             "Outline and links",
                             SHOW_TOOLTIPS,
@@ -5252,7 +5256,11 @@ impl NotesPage {
                         ))
                         .child(crate::ui::window_button(
                             "notes-list-toggle",
-                            "icons/icon-panel-left.svg",
+                            if self.list_visible {
+                                "icons/icon-panel-left-close.svg"
+                            } else {
+                                "icons/icon-panel-left-open.svg"
+                            },
                             theme::raised().into(),
                             if self.list_visible {
                                 "Hide list"
