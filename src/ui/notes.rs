@@ -5237,9 +5237,9 @@ impl NotesPage {
                         .child(crate::ui::window_button(
                             "notes-context-toggle",
                             if self.context_open {
-                                "icons/icon-panel-right-close.svg"
+                                "icons/icon-panel-right-on.svg"
                             } else {
-                                "icons/icon-panel-right-open.svg"
+                                "icons/icon-panel-right-off.svg"
                             },
                             theme::raised().into(),
                             "Outline and links",
@@ -5257,9 +5257,9 @@ impl NotesPage {
                         .child(crate::ui::window_button(
                             "notes-list-toggle",
                             if self.list_visible {
-                                "icons/icon-panel-left-close.svg"
+                                "icons/icon-panel-left-on.svg"
                             } else {
-                                "icons/icon-panel-left-open.svg"
+                                "icons/icon-panel-left-off.svg"
                             },
                             theme::raised().into(),
                             if self.list_visible {
