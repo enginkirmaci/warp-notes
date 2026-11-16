@@ -73,7 +73,11 @@ fn load_directory(directory: &Path) -> Vec<Rc<NotesTreeItem>> {
     sorted.sort_by_key(|e| e.file_name());
     for entry in sorted {
         let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with('.') {
+        // a dot FOLDER is the store's own hidden business (`<store>/.warp-notes`
+        // carries the trash), and no walker descends into one. A dot file is a
+        // note like any other: search matches it by name, so the tree must
+        // draw it too.
+        if name.starts_with('.') && entry.file_type().is_ok_and(|kind| kind.is_dir()) {
             continue;
         }
         match entry.file_type() {
@@ -433,14 +437,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
         let root = tmp.join("My Repo");
         std::fs::create_dir_all(root.join("sub")).unwrap();
+        // the store's hidden app folder (the trash lives inside it) is a dot
+        // directory and stays out of the tree
+        std::fs::create_dir_all(root.join(".warp-notes/trash")).unwrap();
         std::fs::write(root.join("alpha.md"), "# Title\n\nhello needle here\n").unwrap();
         std::fs::write(root.join("sub/beta.md"), "nothing relevant\n").unwrap();
         std::fs::write(root.join(".hidden.md"), "needle").unwrap();
 
         let tree = load_tree(&root);
-        assert_eq!(tree.len(), 2);
+        // the dot note draws like search already finds it; only dot folders
+        // are skipped
+        assert_eq!(tree.len(), 3);
         assert!(tree[0].is_folder && tree[0].name == "sub");
-        assert_eq!(tree[1].name, "alpha.md");
+        assert_eq!(tree[1].name, ".hidden.md");
+        assert_eq!(tree[2].name, "alpha.md");
 
         // hidden FILES match by name (only dot-DIRECTORIES are skipped)
         let hits = search(&root, "needle");

@@ -306,9 +306,13 @@ pub struct NotesPage {
     /// About: which suite member the detail shows; Notes until another is
     /// picked.
     pub(crate) about_selected: warpui_kit_core::about::AppId,
-    /// The installed members the About list renders; probed on first open and
-    /// refreshed each time About is picked from the rail.
+    /// The installed members the About list renders: this app is seeded in the
+    /// constructor, the siblings land from one background scan, and a real
+    /// switch into About starts another.
     pub(crate) about_members: Vec<warpui_kit_core::about::Member>,
+    /// A background About scan is in flight: a section switch does not start a
+    /// second one while the first is still probing.
+    about_scanning: bool,
     /// The license card is up over the About section.
     pub(crate) about_license_open: bool,
     /// The license document, built the first time the card opens: read-only
@@ -467,7 +471,17 @@ impl NotesPage {
                 .default_value(store_root.display().to_string())
                 .placeholder(crate::paths::default_store_root().display().to_string())
         });
-        let notes_scope = launch.repo_scope;
+        // a --repo launch pins the scope for the next bare launch too, so the
+        // window reopens where the last session was; --root cleared the
+        // remembered pin above and nothing here may put it back
+        if !launch.whole_store
+            && let Some(repo) = launch.repo_scope.as_ref()
+            && prefs.notes_scope.as_deref() != Some(repo.as_str())
+        {
+            prefs.notes_scope = Some(repo.clone());
+            prefs.save();
+        }
+        let notes_scope = launch.repo_scope.clone();
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search all notes…"));
         let editor = cx.new(|cx| LiveEditorState::new(window, cx).placeholder("# Title"));
         let find = cx.new(|cx| InputState::new(window, cx).placeholder("Find in note…"));
@@ -585,7 +599,11 @@ impl NotesPage {
             notes_scope,
             section,
             about_selected: warpui_kit_core::about::AppId::Notes,
-            about_members: Vec::new(),
+            about_members: vec![warpui_kit_core::about::current_member(
+                warpui_kit_core::about::AppId::Notes,
+                &warpui_kit_core::build_info!(),
+            )],
+            about_scanning: false,
             about_license_open: false,
             about_license: None,
             settings_section,
@@ -736,6 +754,10 @@ impl NotesPage {
             let _ = weak.update(cx, |page, cx| page.flush_saves(cx));
             true
         });
+        // the About list is seeded with this app above; the installed siblings
+        // are probed once here, off the UI thread, because each one is a
+        // `--version` spawn that can stall for seconds
+        page.refresh_about_members(cx);
         page
     }
 
@@ -1255,6 +1277,9 @@ impl NotesPage {
         self.prefs
             .pinned
             .retain(|relative| requested.join(relative).is_file());
+        // the remembered folders belong to the store being left behind: saved
+        // after the clear below, they would rejoin onto the new root
+        self.prefs.expanded.clear();
         self.prefs.save();
         self.open_tabs.clear();
         self.active_tab = 0;
@@ -3370,8 +3395,10 @@ impl NotesPage {
 
     /// The rail's open section, remembered so a restart reopens it.
     fn set_section(&mut self, section: Section, cx: &mut Context<Self>) {
-        if section == Section::About {
-            self.about_members.clear();
+        // a real switch into About re-scans; clicking the rail item that is
+        // already open must not throw the landed list away
+        if section == Section::About && self.section != Section::About {
+            self.refresh_about_members(cx);
         }
         self.section = section;
         self.prefs.section = match section {
@@ -3382,6 +3409,35 @@ impl NotesPage {
         .into();
         self.prefs.save();
         cx.notify();
+    }
+
+    /// Re-reads the installed family off the UI thread: `detect_installed`
+    /// spawns `<sibling> --version` for every installed app and waits on its
+    /// process, so it must never run inside a frame. The seeded row stays on
+    /// screen until the answer lands, and a scan already in flight owns the
+    /// members it will replace.
+    fn refresh_about_members(&mut self, cx: &mut Context<Self>) {
+        use warpui_kit_core::about;
+
+        if self.about_scanning {
+            return;
+        }
+        self.about_scanning = true;
+        cx.spawn(async move |this, cx| {
+            let build = warpui_kit_core::build_info!();
+            let members = cx
+                .background_executor()
+                .spawn(async move { about::detect_installed(about::AppId::Notes, &build) })
+                .await;
+            let _ = this.update(cx, |this: &mut NotesPage, cx| {
+                this.about_scanning = false;
+                if !members.is_empty() {
+                    this.about_members = members;
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// The rail: the tree and editor's section, with Settings pinned to the
@@ -5037,17 +5093,12 @@ impl NotesPage {
                                 "Open Warp Station",
                             )
                             .on_click(|_, _, _| {
-                                // the window outlives this one: reap the child
-                                // on a thread instead of leaving a zombie
-                                match std::process::Command::new("warp-station").spawn() {
-                                    Ok(mut child) => {
-                                        std::thread::spawn(move || {
-                                            let _ = child.wait();
-                                        });
-                                    }
-                                    Err(err) => {
-                                        tracing::warn!("could not launch warp-station: {err}");
-                                    }
+                                // the bundle keeps every binary in one bin/:
+                                // resolve the sibling next to this one first,
+                                // PATH second, the way the About screen does
+                                if let Err(err) = warpui_kit_platform::sibling::open("warp-station")
+                                {
+                                    tracing::warn!("could not launch warp-station: {err}");
                                 }
                             })
                             .when(SHOW_TOOLTIPS, |d| {

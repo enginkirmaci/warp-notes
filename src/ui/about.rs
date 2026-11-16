@@ -21,10 +21,6 @@ impl NotesPage {
         let width = self.prefs.list_width;
         let selected = self.about_selected;
         let current = AppId::Notes;
-        if self.about_members.is_empty() {
-            let build = warpui_kit_core::build_info!();
-            self.about_members = about::detect_installed(current, &build);
-        }
 
         let entity = cx.entity();
         let pick = entity.clone();

@@ -20,7 +20,7 @@ pub struct UiPrefs {
     pub reduce_motion: bool,
     /// Whether the list pane shows at all (Ctrl+\ and the titlebar toggle).
     pub list_visible: bool,
-    /// The rail's open section: "notes" or "settings".
+    /// The rail's open section: "notes", "about" or "settings".
     pub section: String,
     /// The Settings screen's own section: "general" or "appearance".
     pub settings_section: String,
@@ -93,7 +93,7 @@ impl UiPrefs {
     /// otherwise have to re-check on every use.
     fn normalized(mut self) -> Self {
         self.list_width = shell::clamp_list_width(self.list_width);
-        if self.section != "notes" && self.section != "settings" {
+        if self.section != "notes" && self.section != "settings" && self.section != "about" {
             self.section = "notes".into();
         }
         if self.settings_section != "general" && self.settings_section != "appearance" {
