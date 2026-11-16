@@ -1,6 +1,6 @@
-//! The About section: the family in the list, the selected member in the
-//! detail. The screen itself is `warpui_kit_core::about`; this holds the one
-//! piece of state it needs and the effects behind its verbs, so every app's
+//! The About section: the installed family in the list, the selected member in
+//! the detail. The screen itself is `warpui_kit_core::about`; this holds the
+//! one piece of state it needs and the effects behind its verbs, so every app's
 //! About behaves the same and only the rail plumbing differs.
 
 use crate::ui::notes::{NotesPage, NoticeKind};
@@ -12,16 +12,19 @@ use warpui_kit_core::shell;
 pub(crate) const LICENSE: &str = include_str!("../../LICENSE");
 
 impl NotesPage {
-    /// The rail's About section: the four suite members in the list, the
+    /// The rail's About section: the installed members in the list, the
     /// selected one's identity, Build and Legal cards in the detail. It opens
     /// on Notes, the app you are in.
     pub(crate) fn render_about(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         use warpui_kit_core::about::{self, AppId};
 
-        let build = warpui_kit_core::build_info!();
         let width = self.prefs.list_width;
         let selected = self.about_selected;
         let current = AppId::Notes;
+        if self.about_members.is_empty() {
+            let build = warpui_kit_core::build_info!();
+            self.about_members = about::detect_installed(current, &build);
+        }
 
         let entity = cx.entity();
         let pick = entity.clone();
@@ -45,11 +48,17 @@ impl NotesPage {
         shell::panes()
             .min_w_0()
             .debug_selector(|| "about-page".into())
-            .child(about::list(width, selected, current, &build, on_pick))
+            .child(about::list(
+                width,
+                selected,
+                current,
+                &self.about_members,
+                on_pick,
+            ))
             .child(about::detail(
                 selected,
                 current,
-                &build,
+                &self.about_members,
                 "Open Station",
                 on_action,
                 on_link,
@@ -77,9 +86,14 @@ impl NotesPage {
             }
             about::Action::SnapIt => self.launch_sibling("warp-station", cx),
             about::Action::CopyVersion => {
-                let build = warpui_kit_core::build_info!();
-                let line = build.version_line(about::app(self.about_selected));
-                cx.write_to_clipboard(ClipboardItem::new_string(line));
+                let Some(member) = about::selected_member(
+                    &self.about_members,
+                    self.about_selected,
+                    about::AppId::Notes,
+                ) else {
+                    return;
+                };
+                cx.write_to_clipboard(ClipboardItem::new_string(member.version_line()));
             }
         }
     }

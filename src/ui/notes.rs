@@ -306,6 +306,9 @@ pub struct NotesPage {
     /// About: which suite member the detail shows; Notes until another is
     /// picked.
     pub(crate) about_selected: warpui_kit_core::about::AppId,
+    /// The installed members the About list renders; probed on first open and
+    /// refreshed each time About is picked from the rail.
+    pub(crate) about_members: Vec<warpui_kit_core::about::Member>,
     /// The license card is up over the About section.
     pub(crate) about_license_open: bool,
     /// The license document, built the first time the card opens: read-only
@@ -582,6 +585,7 @@ impl NotesPage {
             notes_scope,
             section,
             about_selected: warpui_kit_core::about::AppId::Notes,
+            about_members: Vec::new(),
             about_license_open: false,
             about_license: None,
             settings_section,
@@ -3366,6 +3370,9 @@ impl NotesPage {
 
     /// The rail's open section, remembered so a restart reopens it.
     fn set_section(&mut self, section: Section, cx: &mut Context<Self>) {
+        if section == Section::About {
+            self.about_members.clear();
+        }
         self.section = section;
         self.prefs.section = match section {
             Section::Notes => "notes",
