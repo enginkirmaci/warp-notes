@@ -58,7 +58,7 @@ from DevTools into its own repo. Rust/GPUI (gpui-kit 0.9), one crate.
   renders in place while typing with its syntax hidden until the caret touches
   it, checkboxes toggle on click, Enter continues lists, links and
   `[[wikilinks]]` open on click, Ctrl+F finds; frontmatter is a Properties
-  panel, Mermaid blocks render as diagrams, tables grow from their add strips
+  panel, tables grow from their add strips
   and images sit inside sentences; colors come from the app's accent preset.
   The engine and the toolbar's pure markdown ops are shared with the family
   via [warpui-kit-markdown](../warpui-kit-markdown).
