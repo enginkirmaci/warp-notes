@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
-"""This app's version and build counter.
+"""This app's version writer.
 
-`version.toml` is the source of truth: `version` (MAJOR.MINOR.PATCH) and
-`build` (a monotonic counter). Every commit bumps PATCH through the
-pre-commit hook; every build-script run bumps build. `Cargo.toml` (and the
+`version.toml` is the source of truth: `version` (MAJOR.MINOR.PATCH). Every
+commit bumps PATCH through the pre-commit hook. `Cargo.toml` (and the
 path-dependency manifests) and `Cargo.lock` are derived from this file.
 
 Usage:
   version.py show [--json] [--next]
   version.py bump {patch|minor|major}
-  version.py build bump
   version.py sync
   version.py check
   version.py pre-commit [--dry-run]
@@ -63,12 +61,9 @@ def read_facts() -> dict:
         fail(f"{VERSION_FILE} is missing")
     data = tomllib.loads(VERSION_FILE.read_text(encoding="utf-8"))
     version = str(data.get("version", "")).strip()
-    build = data.get("build", 0)
     if not SEMVER.match(version):
         fail(f"version.toml version {version!r} is not MAJOR.MINOR.PATCH")
-    if not isinstance(build, int) or build < 0:
-        fail(f"version.toml build {build!r} is not a non-negative integer")
-    return {"version": version, "build": build}
+    return {"version": version}
 
 
 @contextmanager
@@ -98,7 +93,7 @@ def version_lock():
         fh.close()
 
 
-def write_version_text(text: str, version: str, build: int) -> str:
+def write_version_text(text: str, version: str) -> str:
     text, n = re.subn(
         r'(?m)^(\s*version\s*=\s*")[^"]*(")',
         rf"\g<1>{version}\2",
@@ -107,9 +102,6 @@ def write_version_text(text: str, version: str, build: int) -> str:
     )
     if n != 1:
         fail("version.toml has no `version = ` line")
-    text, n = re.subn(r"(?m)^(\s*build\s*=\s*)\d+", rf"\g<1>{build}", text, count=1)
-    if n != 1:
-        fail("version.toml has no `build = ` line")
     return text
 
 
@@ -118,14 +110,13 @@ def mutate_version(change):
         raw = fh.read()
         data = tomllib.loads(raw)
         version = str(data["version"]).strip()
-        build = int(data.get("build", 0))
-        new_version, new_build = change(version, build)
+        new_version = change(version)
         fh.seek(0)
         fh.truncate()
-        fh.write(write_version_text(raw, new_version, new_build))
+        fh.write(write_version_text(raw, new_version))
         fh.flush()
         os.fsync(fh.fileno())
-    return new_version, new_build
+    return new_version
 
 
 def bump_semver(version: str, kind: str) -> str:
@@ -174,7 +165,7 @@ def facts(version: str | None = None) -> dict:
     data = read_facts()
     if version is None:
         version = data["version"]
-    return {"version": version, "build": data["build"], **git_facts(version)}
+    return {"version": version, **git_facts(version)}
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +267,7 @@ def cmd_show(argv: list[str]) -> int:
         print(json.dumps(data, sort_keys=True))
     else:
         released = f" · released {data['released']}" if data["released"] else ""
-        print(f"{data['version']} build {data['build']} · {data['channel']} · {data['commit']}{released}")
+        print(f"{data['version']} · {data['channel']} · {data['commit']}{released}")
     return 0
 
 
@@ -285,20 +276,12 @@ def cmd_bump(argv: list[str]) -> int:
         fail("usage: version.py bump {patch|minor|major}")
     kind = argv[0]
     no_stage = "--no-stage" in argv
-    old, _ = read_facts()
-    new, _ = mutate_version(lambda version, build: (bump_semver(version, kind), build))
+    old = read_facts()["version"]
+    new = mutate_version(lambda version: bump_semver(version, kind))
     sync_cargo(new)
     if not no_stage:
         stage([VERSION_FILE, LOCK_FILE, *manifests()])
     print(f"version: {old} -> {new}")
-    return 0
-
-
-def cmd_build(argv: list[str]) -> int:
-    if argv != ["bump"]:
-        fail("usage: version.py build bump")
-    _, build = mutate_version(lambda version, current: (version, current + 1))
-    print(build)
     return 0
 
 
@@ -321,10 +304,10 @@ def cmd_pre_commit(argv: list[str]) -> int:
     if dry_run:
         print(f"version: {current['version']} -> {new}; would stage version.toml, Cargo.toml files, Cargo.lock")
         return 0
-    mutate_version(lambda version, build: (new, build))
+    mutate_version(lambda version: new)
     sync_cargo(new)
     stage([VERSION_FILE, LOCK_FILE, *manifests()])
-    print(f"version: {current['version']} -> {new} (build {current['build']})")
+    print(f"version: {current['version']} -> {new}")
     return 0
 
 
@@ -365,7 +348,7 @@ def cmd_check(argv: list[str]) -> int:
             print(f"version: {error}", file=sys.stderr)
         return 1
     data = read_facts()
-    print(f"version: {data['version']} build {data['build']} is consistent")
+    print(f"version: {data['version']} is consistent")
     return 0
 
 
@@ -386,7 +369,6 @@ def cmd_install_hooks(argv: list[str]) -> int:
 COMMANDS = {
     "show": cmd_show,
     "bump": cmd_bump,
-    "build": cmd_build,
     "sync": cmd_sync,
     "check": cmd_check,
     "pre-commit": cmd_pre_commit,
