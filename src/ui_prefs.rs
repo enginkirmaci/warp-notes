@@ -69,7 +69,7 @@ impl UiPrefs {
     /// pre-versioning file is imported once and rewritten with the version.
     pub fn load() -> Self {
         let path = prefs_path();
-        let store = Store::<UiPrefs>::new(path.clone());
+        let store = Store::<UiPrefs>::new(path.clone()).preserving_unknown();
         match store.load() {
             Ok(prefs) => prefs.normalized(),
             Err(err) if err.needs_import() => {
@@ -86,7 +86,9 @@ impl UiPrefs {
     }
 
     pub fn save(&self) {
-        let _ = Store::<UiPrefs>::new(prefs_path()).save(self);
+        let _ = Store::<UiPrefs>::new(prefs_path())
+            .preserving_unknown()
+            .save(self);
     }
 
     /// Values a hand-edited file may hold that the rest of the app would
