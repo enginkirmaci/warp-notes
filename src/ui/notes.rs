@@ -226,6 +226,14 @@ struct RowMenu {
     y: f32,
 }
 
+/// The tab strip's right-click menu, anchored at the pointer on one tab.
+#[derive(Clone, Copy)]
+struct TabMenu {
+    index: usize,
+    x: f32,
+    y: f32,
+}
+
 #[derive(Clone, Debug)]
 struct PaletteItem {
     path: PathBuf,
@@ -431,6 +439,9 @@ pub struct NotesPage {
     prompt_input: Entity<InputState>,
     /// The row action menu, anchored where the pointer opened it.
     row_menu: Option<RowMenu>,
+    /// The tab strip's right-click menu, anchored where the pointer opened it
+    /// on one tab.
+    tab_menu: Option<TabMenu>,
     /// The Trash dialog: list, restore, empty.
     trash_open: bool,
     /// Ctrl+P quick open over the whole store.
@@ -663,6 +674,7 @@ impl NotesPage {
             prompt: None,
             prompt_input,
             row_menu: None,
+            tab_menu: None,
             trash_open: false,
             palette_open: false,
             palette_input,
@@ -924,6 +936,7 @@ impl NotesPage {
         mode: OpenMode,
         record_history: bool,
     ) {
+        self.tab_menu = None;
         if let Some(index) = self.open_tabs.iter().position(|tab| tab.path == path) {
             // a deliberate open keeps the tab it lands on
             let mut kept = false;
@@ -1126,6 +1139,7 @@ impl NotesPage {
     }
 
     fn activate_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.tab_menu = None;
         if index >= self.open_tabs.len() || index == self.active_tab {
             return;
         }
@@ -1188,6 +1202,7 @@ impl NotesPage {
     }
 
     fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.tab_menu = None;
         if index >= self.open_tabs.len() {
             return;
         }
@@ -1207,6 +1222,42 @@ impl NotesPage {
             }
         }
         cx.notify();
+    }
+
+    /// Closes every tab but `keep`, leaving the kept tab active. Activating it
+    /// first saves the outgoing buffer through the same path a click does;
+    /// every other tab then closes exactly as its own × would.
+    fn close_other_tabs(&mut self, keep: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if keep >= self.open_tabs.len() {
+            return;
+        }
+        self.activate_tab(keep, window, cx);
+        for index in (0..self.open_tabs.len()).rev() {
+            if index != keep {
+                self.close_tab(index, window, cx);
+            }
+        }
+    }
+
+    /// Closes the tabs after `index`, from the highest down so the indices
+    /// stay valid. When the active tab was among them the right-clicked tab
+    /// takes the focus; otherwise the active tab is untouched.
+    fn close_tabs_to_the_right(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if index >= self.open_tabs.len() {
+            return;
+        }
+        let active_was_closed = self.active_tab > index;
+        for at in (index + 1..self.open_tabs.len()).rev() {
+            self.close_tab(at, window, cx);
+        }
+        if active_was_closed {
+            self.activate_tab(index, window, cx);
+        }
     }
 
     fn go_history(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
@@ -1283,6 +1334,7 @@ impl NotesPage {
         self.prefs.save();
         self.open_tabs.clear();
         self.active_tab = 0;
+        self.tab_menu = None;
         self.history.clear();
         self.history_index = 0;
         self.open_note = None;
@@ -2004,6 +2056,7 @@ impl NotesPage {
         let Some(scope) = self.notes_root() else {
             return;
         };
+        self.tab_menu = None;
         let open_before = self.open_note.clone();
         let affected = open_before
             .as_ref()
@@ -2173,7 +2226,23 @@ impl NotesPage {
             x: at.x.as_f32(),
             y: at.y.as_f32(),
         });
+        self.tab_menu = None;
         self.prompt = None;
+        cx.notify();
+    }
+
+    /// A right-click on a tab opens its menu where the pointer is. The tab
+    /// itself is not activated: the menu acts on the tab under the pointer.
+    fn open_tab_menu(&mut self, index: usize, at: gpui::Point<Pixels>, cx: &mut Context<Self>) {
+        if index >= self.open_tabs.len() {
+            return;
+        }
+        self.tab_menu = Some(TabMenu {
+            index,
+            x: at.x.as_f32(),
+            y: at.y.as_f32(),
+        });
+        self.row_menu = None;
         cx.notify();
     }
 
@@ -3070,28 +3139,29 @@ fn resolve_folder(scope: &Path, value: &str) -> anyhow::Result<PathBuf> {
 fn menu_item(
     id: &'static str,
     label: impl Into<SharedString>,
+    keycap: Option<&'static str>,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> gpui::AnyElement {
-    let label: SharedString = label.into();
-    div()
-        .id(id)
-        .debug_selector(move || id.into())
-        .a11y_button(label.clone())
-        .cursor_pointer()
-        .rounded(px(6.))
-        .px_2()
-        .py_1p5()
-        .text_size(px(theme::font_body()))
-        .text_color(theme::text_dim())
-        .hover(|style| style.bg(theme::raised()).text_color(theme::text()))
-        .on_click(on_click)
-        .child(label)
-        .into_any_element()
+    menu_button(id, label, keycap, false, on_click)
 }
 
 fn menu_item_danger(
     id: &'static str,
     label: impl Into<SharedString>,
+    keycap: Option<&'static str>,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> gpui::AnyElement {
+    menu_button(id, label, keycap, true, on_click)
+}
+
+/// One row of a hand-drawn menu: the label on the left and, when the row
+/// answers a key, its shortcut as a right-aligned keycap. `id` also names the
+/// keycap's debug selector (`<id>-key`) so a probe can find what it draws.
+fn menu_button(
+    id: &'static str,
+    label: impl Into<SharedString>,
+    keycap: Option<&'static str>,
+    danger: bool,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> gpui::AnyElement {
     let label: SharedString = label.into();
@@ -3100,14 +3170,33 @@ fn menu_item_danger(
         .debug_selector(move || id.into())
         .a11y_button(label.clone())
         .cursor_pointer()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap_2()
         .rounded(px(6.))
         .px_2()
         .py_1p5()
         .text_size(px(theme::font_body()))
-        .text_color(theme::DANGER)
-        .hover(|style| style.bg(theme::tint(theme::DANGER)))
-        .on_click(on_click)
+        .when(danger, |row| {
+            row.text_color(theme::DANGER)
+                .hover(|style| style.bg(theme::tint(theme::DANGER)))
+        })
+        .when(!danger, |row| {
+            row.text_color(theme::text_dim())
+                .hover(|style| style.bg(theme::raised()).text_color(theme::text()))
+        })
         .child(label)
+        .when_some(keycap, |row, key| {
+            row.child(
+                div()
+                    .flex_shrink_0()
+                    .debug_selector(move || format!("{id}-key"))
+                    .child(warpui_kit_core::field::kbd(key)),
+            )
+        })
+        .on_click(on_click)
         .into_any_element()
 }
 
@@ -3306,6 +3395,10 @@ impl Render for NotesPage {
                     this.create_open = false;
                     cx.notify();
                     cx.stop_propagation();
+                } else if event.keystroke.key == "escape" && this.tab_menu.is_some() {
+                    this.tab_menu = None;
+                    cx.notify();
+                    cx.stop_propagation();
                 }
             }))
             // the keybinding path: the action fires even where a focused
@@ -3344,6 +3437,11 @@ impl Render for NotesPage {
         }
         if let Some(menu) = self.row_menu.clone() {
             root = root.child(self.render_row_menu(window, cx, menu));
+        }
+        if let Some(menu) = self.tab_menu
+            && menu.index < self.open_tabs.len()
+        {
+            root = root.child(self.render_tab_menu(window, cx, menu));
         }
         if let Some(prompt) = self.prompt.clone() {
             root = root.child(self.render_prompt(window, cx, prompt));
@@ -3399,6 +3497,11 @@ impl NotesPage {
         // already open must not throw the landed list away
         if section == Section::About && self.section != Section::About {
             self.refresh_about_members(cx);
+        }
+        // the tab strip only exists in Notes; a menu left over it must not
+        // float above Settings or About
+        if section != Section::Notes {
+            self.tab_menu = None;
         }
         self.section = section;
         self.prefs.section = match section {
@@ -3564,6 +3667,15 @@ impl NotesPage {
                     cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
                         this.close_tab(index, window, cx);
+                    }),
+                )
+                // The menu acts on the tab under the pointer: opening it must
+                // not also activate or keep the tab.
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                        this.open_tab_menu(index, event.position, cx);
+                        cx.stop_propagation();
                     }),
                 )
                 .child(
@@ -4144,6 +4256,10 @@ impl NotesPage {
         let path = menu.path.clone();
         let is_folder = menu.is_folder;
         let pinned = self.is_pinned(&path);
+        // The tree's row keys belong to the All scope: the pinned list is a
+        // flat list with no cursor and answers none of them, so its menu
+        // prints no keycaps.
+        let keycaps = self.list_scope == ListScope::All;
         let card = warpui_kit_core::controls::popover_card()
             .id("notes-row-menu")
             .debug_selector(|| "notes-row-menu".into())
@@ -4158,6 +4274,7 @@ impl NotesPage {
             .child(menu_item(
                 "notes-menu-open",
                 "Open",
+                keycaps.then_some("Enter"),
                 cx.listener({
                     let path = path.clone();
                     move |this, _, window, cx| {
@@ -4168,6 +4285,7 @@ impl NotesPage {
             .child(menu_item(
                 "notes-menu-open-tab",
                 "Open in new tab",
+                None,
                 cx.listener({
                     let path = path.clone();
                     move |this, _, window, cx| {
@@ -4180,6 +4298,7 @@ impl NotesPage {
             .child(menu_item(
                 "notes-menu-rename",
                 "Rename…",
+                keycaps.then_some("F2"),
                 cx.listener({
                     let path = path.clone();
                     move |this, _, window, cx| {
@@ -4192,6 +4311,7 @@ impl NotesPage {
                 card.child(menu_item(
                     "notes-menu-duplicate",
                     "Duplicate",
+                    keycaps.then_some("Ctrl D"),
                     cx.listener({
                         let path = path.clone();
                         move |this, _, window, cx| {
@@ -4204,6 +4324,7 @@ impl NotesPage {
             .child(menu_item(
                 "notes-menu-move",
                 "Move to folder…",
+                None,
                 cx.listener({
                     let path = path.clone();
                     move |this, _, window, cx| {
@@ -4215,6 +4336,7 @@ impl NotesPage {
             .child(menu_item(
                 "notes-menu-new-note",
                 "New note here",
+                None,
                 cx.listener({
                     let path = path.clone();
                     move |this, _, window, cx| {
@@ -4226,6 +4348,7 @@ impl NotesPage {
             .child(menu_item(
                 "notes-menu-new-folder",
                 "New folder…",
+                None,
                 cx.listener({
                     let path = path.clone();
                     move |this, _, window, cx| {
@@ -4243,6 +4366,7 @@ impl NotesPage {
             .child(menu_item(
                 "notes-menu-copy-path",
                 "Copy path",
+                None,
                 cx.listener({
                     let path = path.clone();
                     move |this, _, _, cx| {
@@ -4254,6 +4378,7 @@ impl NotesPage {
             .child(menu_item(
                 "notes-menu-pin",
                 if pinned { "Unpin note" } else { "Pin note" },
+                None,
                 cx.listener({
                     let path = path.clone();
                     move |this, _, _, cx| {
@@ -4265,6 +4390,7 @@ impl NotesPage {
             .child(menu_item(
                 "notes-menu-trash-dialog",
                 "Trash…",
+                None,
                 cx.listener(|this, _, _, cx| {
                     this.open_trash_dialog(cx);
                 }),
@@ -4272,6 +4398,7 @@ impl NotesPage {
             .child(menu_item_danger(
                 "notes-menu-trash",
                 "Move to Trash",
+                keycaps.then_some("Del"),
                 cx.listener({
                     let path = path.clone();
                     move |this, _, window, cx| {
@@ -4296,6 +4423,81 @@ impl NotesPage {
                 MouseButton::Right,
                 cx.listener(|this, _, _, cx| {
                     this.row_menu = None;
+                    cx.notify();
+                }),
+            )
+            .child(card)
+            .into_any_element()
+    }
+
+    /// The tab strip's right-click menu: same popover card and scrim as the
+    /// tree row menu, anchored where the pointer opened it.
+    fn render_tab_menu(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+        menu: TabMenu,
+    ) -> gpui::AnyElement {
+        let max_x = (window.viewport_size().width.as_f32() - theme::MENU_WIDTH - 8.).max(8.);
+        let max_y = (window.viewport_size().height.as_f32() - 160.).max(8.);
+        let x = menu.x.clamp(8., max_x);
+        let y = menu.y.clamp(8., max_y);
+        let index = menu.index;
+        let card = warpui_kit_core::controls::popover_card()
+            .id("notes-tab-menu")
+            .debug_selector(|| "notes-tab-menu".into())
+            .absolute()
+            .left(px(x))
+            .top(px(y))
+            .w(px(theme::MENU_WIDTH))
+            .occlude()
+            .flex()
+            .flex_col()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(menu_item(
+                "notes-tab-menu-close",
+                "Close",
+                Some("Ctrl W"),
+                cx.listener(move |this, _, window, cx| {
+                    this.tab_menu = None;
+                    this.close_tab(index, window, cx);
+                }),
+            ))
+            .child(menu_item(
+                "notes-tab-menu-close-others",
+                "Close other tabs",
+                None,
+                cx.listener(move |this, _, window, cx| {
+                    this.tab_menu = None;
+                    this.close_other_tabs(index, window, cx);
+                }),
+            ))
+            .child(menu_item(
+                "notes-tab-menu-close-right",
+                "Close tabs to the right",
+                None,
+                cx.listener(move |this, _, window, cx| {
+                    this.tab_menu = None;
+                    this.close_tabs_to_the_right(index, window, cx);
+                }),
+            ));
+        div()
+            .id("notes-tab-menu-scrim")
+            .debug_selector(|| "notes-tab-menu-scrim".into())
+            .absolute()
+            .inset_0()
+            .occlude()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.tab_menu = None;
+                    cx.notify();
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, _, _, cx| {
+                    this.tab_menu = None;
                     cx.notify();
                 }),
             )

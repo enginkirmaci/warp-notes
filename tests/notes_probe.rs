@@ -110,6 +110,23 @@ fn middle_click(cx: &mut VisualTestContext, selector: &str) {
     cx.update(|window, cx| drop(window.draw(cx)));
 }
 
+/// A right click: the platform's secondary button, which opens the menus the
+/// probe then reads.
+fn right_click(cx: &mut VisualTestContext, selector: &str) {
+    let selector: &'static str = Box::leak(selector.to_string().into_boxed_str());
+    let b = cx
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} missing from the frame"));
+    let center = Point {
+        x: b.origin.x + b.size.width / 2.,
+        y: b.origin.y + b.size.height / 2.,
+    };
+    cx.simulate_mouse_down(center, MouseButton::Right, Modifiers::default());
+    cx.simulate_mouse_up(center, MouseButton::Right, Modifiers::default());
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+}
+
 /// Move the open note to Trash through the head's verb menu: the detail head
 /// carries no Trash button of its own.
 fn trash_open_note(cx: &mut VisualTestContext) {
@@ -3581,6 +3598,293 @@ fn empty_state_offers_a_new_note(cx: &mut TestAppContext) {
     assert!(
         bounds(cx, "note-create-form").is_some(),
         "the empty state starts the new-note form"
+    );
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn the_row_menu_draws_each_shortcut_as_a_keycap(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-menu-keycaps");
+    let (handle, _page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    // A right click on a tree row opens the menu; the four rows that answer a
+    // tree key print that key as a right-aligned keycap.
+    right_click(cx, "note-item-note.md");
+    let card = bounds(cx, "notes-row-menu").expect("the tree row menu opens on a right click");
+    for (row, key) in [
+        ("notes-menu-open", "notes-menu-open-key"),
+        ("notes-menu-rename", "notes-menu-rename-key"),
+        ("notes-menu-duplicate", "notes-menu-duplicate-key"),
+        ("notes-menu-trash", "notes-menu-trash-key"),
+    ] {
+        let row_bounds = bounds(cx, row).unwrap_or_else(|| panic!("{row} missing from the frame"));
+        let key_bounds = bounds(cx, key).unwrap_or_else(|| panic!("{key} missing from the frame"));
+        let row_right = row_bounds.origin.x + row_bounds.size.width;
+        let key_right = key_bounds.origin.x + key_bounds.size.width;
+        assert!(
+            key_bounds.origin.x + key_bounds.size.width / 2.
+                > row_bounds.origin.x + row_bounds.size.width / 2.,
+            "{row} puts its keycap on the right"
+        );
+        assert!(
+            key_right <= row_right && row_right - key_right <= px(16.),
+            "{row} keeps its keycap inside the row's right padding"
+        );
+        assert!(
+            key_right <= card.origin.x + card.size.width,
+            "{key} stays inside the menu card"
+        );
+    }
+    assert!(
+        bounds(cx, "notes-menu-open-tab-key").is_none(),
+        "a row with no shortcut draws no keycap"
+    );
+
+    // The pinned scope is a flat list with no tree cursor: it answers none of
+    // those keys, so its menu prints no keycaps.
+    click(cx, "notes-menu-pin");
+    click(cx, "notes-list-scope-pinned");
+    right_click(cx, "note-item-note.md");
+    assert!(bounds(cx, "notes-row-menu").is_some());
+    for key in [
+        "notes-menu-open-key",
+        "notes-menu-rename-key",
+        "notes-menu-duplicate-key",
+        "notes-menu-trash-key",
+    ] {
+        assert!(
+            bounds(cx, key).is_none(),
+            "{key} is absent in the pinned scope"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// Opens three tabs (note.md previewed, then task.md and list.md kept) and
+/// leaves the last one active: the starting point of the tab-menu probes.
+fn open_three_tabs(cx: &mut VisualTestContext) {
+    click(cx, "note-item-note.md");
+    click_str(cx, "note-actions-task.md");
+    click(cx, "notes-menu-open-tab");
+    click_str(cx, "note-actions-list.md");
+    click(cx, "notes-menu-open-tab");
+}
+
+#[gpui::test]
+fn the_tab_menu_opens_on_a_right_click_and_closes_a_tab(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-tab-menu");
+    let alpha = home.join("notes/projects/alpha");
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    open_three_tabs(cx);
+    assert_eq!(
+        page.read_with(cx, |page, _| page.tab_paths_for_probe())
+            .len(),
+        3
+    );
+    assert_eq!(page.read_with(cx, |page, _| page.active_tab_for_probe()), 2);
+
+    // The home chip is not a note tab: it opens no menu.
+    right_click(cx, "notes-strip-home");
+    assert!(
+        bounds(cx, "notes-tab-menu").is_none(),
+        "the Notes home chip has no tab menu"
+    );
+    // Nor is the + button a tab.
+    right_click(cx, "notes-tab-new");
+    assert!(
+        bounds(cx, "notes-tab-menu").is_none(),
+        "the new-tab button has no tab menu"
+    );
+
+    // A right click on a background tab opens the menu without activating it.
+    right_click(cx, "note-tab-0");
+    assert!(bounds(cx, "notes-tab-menu").is_some(), "the tab menu opens");
+    assert_eq!(
+        page.read_with(cx, |page, _| page.active_tab_for_probe()),
+        2,
+        "the right click opens the menu without activating the tab"
+    );
+    for row in [
+        "notes-tab-menu-close",
+        "notes-tab-menu-close-others",
+        "notes-tab-menu-close-right",
+    ] {
+        assert!(bounds(cx, row).is_some(), "{row} is in the tab menu");
+    }
+    let row = bounds(cx, "notes-tab-menu-close").expect("the Close row");
+    let key = bounds(cx, "notes-tab-menu-close-key").expect("Close carries its keycap");
+    let row_right = row.origin.x + row.size.width;
+    let key_right = key.origin.x + key.size.width;
+    assert!(
+        key.origin.x + key.size.width / 2. > row.origin.x + row.size.width / 2.,
+        "the Ctrl W keycap is right-aligned"
+    );
+    assert!(
+        key_right <= row_right && row_right - key_right <= px(16.),
+        "the Ctrl W keycap sits on the row's right"
+    );
+
+    // Close closes the tab the menu names, not the active one.
+    click(cx, "notes-tab-menu-close");
+    assert!(
+        bounds(cx, "notes-tab-menu").is_none(),
+        "the menu closes with its row"
+    );
+    assert_eq!(
+        page.read_with(cx, |page, _| page.tab_paths_for_probe()),
+        vec![alpha.join("task.md"), alpha.join("list.md")]
+    );
+
+    // Escape dismisses the menu and leaves the strip alone.
+    right_click(cx, "note-tab-0");
+    assert!(bounds(cx, "notes-tab-menu").is_some());
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+    assert!(
+        bounds(cx, "notes-tab-menu").is_none(),
+        "Escape dismisses the tab menu"
+    );
+    assert_eq!(
+        page.read_with(cx, |page, _| page.tab_paths_for_probe())
+            .len(),
+        2
+    );
+
+    // A press outside the card dismisses it too.
+    right_click(cx, "note-tab-1");
+    assert!(bounds(cx, "notes-tab-menu").is_some());
+    cx.simulate_click(Point::new(px(900.), px(600.)), Modifiers::default());
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+    assert!(
+        bounds(cx, "notes-tab-menu").is_none(),
+        "a press outside the menu dismisses it"
+    );
+
+    // A tab strip change while the menu is open closes the menu with it.
+    right_click(cx, "note-tab-0");
+    assert!(bounds(cx, "notes-tab-menu").is_some());
+    cx.simulate_keystrokes("ctrl-w");
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+    assert!(
+        bounds(cx, "notes-tab-menu").is_none(),
+        "the menu goes with the strip change"
+    );
+    assert_eq!(
+        page.read_with(cx, |page, _| page.tab_paths_for_probe()),
+        vec![alpha.join("task.md")]
+    );
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn the_tab_menu_closes_other_tabs_and_the_tabs_to_its_right(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-tab-menu-ranges");
+    let alpha = home.join("notes/projects/alpha");
+    let note = alpha.join("note.md");
+    let (handle, page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    // Close other tabs keeps the right-clicked tab and makes it the active one.
+    open_three_tabs(cx);
+    right_click(cx, "note-tab-0");
+    click(cx, "notes-tab-menu-close-others");
+    assert_eq!(
+        page.read_with(cx, |page, _| page.tab_paths_for_probe()),
+        vec![note.clone()]
+    );
+    assert_eq!(page.read_with(cx, |page, _| page.active_tab_for_probe()), 0);
+    assert_eq!(
+        page.read_with(cx, |page, _| page.open_note_path()),
+        Some(note.clone())
+    );
+
+    // Close tabs to the right keeps the active tab when it is not in the
+    // closed range.
+    open_three_tabs(cx);
+    click(cx, "note-tab-0");
+    right_click(cx, "note-tab-1");
+    click(cx, "notes-tab-menu-close-right");
+    assert_eq!(
+        page.read_with(cx, |page, _| page.tab_paths_for_probe()),
+        vec![note.clone(), alpha.join("task.md")]
+    );
+    assert_eq!(
+        page.read_with(cx, |page, _| page.active_tab_for_probe()),
+        0,
+        "an active tab left of the range stays active"
+    );
+    assert_eq!(
+        page.read_with(cx, |page, _| page.open_note_path()),
+        Some(note.clone())
+    );
+
+    // When the active tab is inside the range, the right-clicked tab takes
+    // the focus.
+    click_str(cx, "note-actions-list.md");
+    click(cx, "notes-menu-open-tab");
+    assert_eq!(page.read_with(cx, |page, _| page.active_tab_for_probe()), 2);
+    right_click(cx, "note-tab-0");
+    click(cx, "notes-tab-menu-close-right");
+    assert_eq!(
+        page.read_with(cx, |page, _| page.tab_paths_for_probe()),
+        vec![note.clone()]
+    );
+    assert_eq!(
+        page.read_with(cx, |page, _| page.active_tab_for_probe()),
+        0,
+        "the right-clicked tab takes the focus its closed range held"
+    );
+    assert_eq!(
+        page.read_with(cx, |page, _| page.open_note_path()),
+        Some(note)
     );
 
     let _ = std::fs::remove_dir_all(&home);
