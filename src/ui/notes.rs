@@ -70,6 +70,19 @@ pub struct Launch {
     pub whole_store: bool,
 }
 
+/// One live job in the title bar's running panel, worded for display. The
+/// chip shows the only job's title when one runs; the panel lists every job.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RunningJob {
+    /// Stable id for the row (also the probe selector): "search", "backlinks"
+    /// or "about".
+    pub key: String,
+    /// The one-line phrase, e.g. "Searching" or "Scanning notes".
+    pub title: String,
+    /// The finer line under the title: what the job walks.
+    pub detail: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum NoticeKind {
     Info,
@@ -412,6 +425,15 @@ pub struct NotesPage {
     backlinks_building: bool,
     /// Debounce sequence; a keystroke invalidates any in-flight search.
     search_generation: u32,
+    /// A store search is in flight: the title bar's activity chip counts it
+    /// with the other background jobs.
+    search_running: bool,
+    /// The title bar's running panel is open: every live job, in start order.
+    /// Closed by a press outside, Escape, or the last job finishing.
+    running_open: bool,
+    /// The OS title the last frame set, so an unchanged activity string does
+    /// not touch the window again.
+    window_title: String,
     /// Ctrl+F in the editor: the find bar, its byte ranges and the current hit.
     find_open: bool,
     find: Entity<InputState>,
@@ -659,6 +681,9 @@ impl NotesPage {
             backlinks_generation: 0,
             backlinks_building: false,
             search_generation: 0,
+            search_running: false,
+            running_open: false,
+            window_title: String::new(),
             find_open: false,
             find,
             find_hits: Vec::new(),
@@ -903,13 +928,64 @@ impl NotesPage {
     }
 
     fn set_note_window_title(&self, window: &mut Window) {
-        let title = self
-            .open_note
+        window.set_window_title(&self.note_window_title());
+    }
+
+    /// The idle title: the open note's name, or the app alone.
+    fn note_window_title(&self) -> String {
+        self.open_note
             .as_ref()
             .and_then(|path| path.file_name())
             .map(|name| format!("{} — Warp Notes", name.to_string_lossy()))
-            .unwrap_or_else(|| "Warp Notes".to_string());
-        window.set_window_title(&title);
+            .unwrap_or_else(|| "Warp Notes".to_string())
+    }
+
+    /// Every live background job, in a fixed order: the store search, the
+    /// backlinks scan, the About probe. The title bar's chip counts this list
+    /// and its panel draws it; one caller owns both so the count and the rows
+    /// can never disagree.
+    pub(crate) fn running_jobs(&self) -> Vec<RunningJob> {
+        let mut jobs = Vec::new();
+        if self.search_running {
+            jobs.push(RunningJob {
+                key: "search".into(),
+                title: "Searching".into(),
+                detail: Some(
+                    if self.search_all_notes {
+                        "Every note in the store"
+                    } else {
+                        "This repository's notes"
+                    }
+                    .into(),
+                ),
+            });
+        }
+        if self.backlinks_building {
+            jobs.push(RunningJob {
+                key: "backlinks".into(),
+                title: "Scanning notes".into(),
+                detail: Some("Notes that link to the open one".into()),
+            });
+        }
+        if self.about_scanning {
+            jobs.push(RunningJob {
+                key: "about".into(),
+                title: "Probing".into(),
+                detail: Some("The installed suite members".into()),
+            });
+        }
+        jobs
+    }
+
+    /// What the title bar says when work runs, from the same list the running
+    /// panel draws. An idle window invents no work: the title falls back to
+    /// the open note's name.
+    pub(crate) fn activity(&self) -> Option<String> {
+        match self.running_jobs().as_slice() {
+            [] => None,
+            [job] => Some(job.title.clone()),
+            jobs => Some(format!("{} running", jobs.len())),
+        }
     }
 
     pub(crate) fn open_note(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
@@ -1867,6 +1943,10 @@ impl NotesPage {
         self.search_selected = 0;
         if term.is_empty() {
             self.search_hits.clear();
+            // a cleared field ends the visible search even if a walk from the
+            // previous term is still in flight; its answer is superseded and
+            // skipped below
+            self.search_running = false;
             cx.notify();
             return;
         }
@@ -1878,6 +1958,7 @@ impl NotesPage {
             };
             root
         };
+        self.search_running = true;
         cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(180))
@@ -1890,6 +1971,7 @@ impl NotesPage {
                 if this.search_generation == generation {
                     this.search_hits = hits;
                     this.search_selected = 0;
+                    this.search_running = false;
                     cx.notify();
                 }
             });
@@ -3246,6 +3328,19 @@ impl Render for NotesPage {
         // the panes register themselves from the render that draws them; the
         // order starts empty so a hidden pane is not a Tab stop this frame
         self.pane_nav.begin_frame();
+        // the OS title: the running jobs when any (the same words the title
+        // bar's chip shows), else the open note's name. It is a string, so the
+        // state is written, never animated.
+        let title = match self.activity() {
+            Some(activity) => {
+                warpui_kit_core::activity::activity_title("Warp Notes", Some(&activity))
+            }
+            None => self.note_window_title(),
+        };
+        if self.window_title != title {
+            window.set_window_title(&title);
+            self.window_title = title;
+        }
         if let Some(requested) = self.store_path_pending.take() {
             self.apply_store_path(requested, window, cx);
         }
@@ -3269,6 +3364,17 @@ impl Render for NotesPage {
             .min_h_0()
             .bg(theme::background())
             .track_focus(&page_focus)
+            // any press outside the running panel takes it down; the chip and
+            // the panel itself stop the press from reaching this handler
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    if this.running_open {
+                        this.running_open = false;
+                        cx.notify();
+                    }
+                }),
+            )
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 let modifiers = event.keystroke.modifiers;
                 let control = modifiers.control;
@@ -3399,6 +3505,10 @@ impl Render for NotesPage {
                     this.tab_menu = None;
                     cx.notify();
                     cx.stop_propagation();
+                } else if event.keystroke.key == "escape" && this.running_open {
+                    this.running_open = false;
+                    cx.notify();
+                    cx.stop_propagation();
                 }
             }))
             // the keybinding path: the action fires even where a focused
@@ -3431,6 +3541,10 @@ impl Render for NotesPage {
             && let Some(popup) = self.render_search_popup(window, cx)
         {
             root = root.child(popup);
+        }
+        // the running panel hangs under the title bar's chip, above the panes
+        if let Some(panel) = self.render_running_panel() {
+            root = root.child(panel);
         }
         if let Some(toasts) = self.render_toasts(cx) {
             root = root.child(toasts);
@@ -3898,12 +4012,27 @@ impl NotesPage {
             }
             ContextTab::Links => {
                 if self.backlinks_building {
+                    // never motion alone: the scan names itself, the animated
+                    // element carries the words in the accessibility tree
                     list = list.child(
                         div()
+                            .id("backlinks-scanning")
+                            .debug_selector(|| "backlinks-scanning".into())
+                            .role(gpui::Role::Status)
+                            .aria_label("Scanning notes")
+                            .flex()
+                            .items_center()
+                            .gap_2()
                             .px_2()
                             .py_2()
                             .text_size(px(theme::font_meta()))
                             .text_color(theme::text_faint())
+                            .child(motion::spinner(
+                                "backlinks-spinner",
+                                "icons/icon-spinner.svg",
+                                px(theme::icon_tiny()),
+                                theme::BEHIND,
+                            ))
                             .child("Scanning notes…"),
                     );
                 } else if self.backlinks.is_empty() {
@@ -4576,7 +4705,7 @@ impl NotesPage {
                             .a11y_button("Cancel")
                             .cursor_pointer()
                             .rounded(px(6.))
-                            .h(px(theme::scaled(shell::CONTROL_HEIGHT) - 8.))
+                            .h(px(theme::scaled(shell::CONTROL_HEIGHT)))
                             .px_3()
                             .flex()
                             .items_center()
@@ -4596,7 +4725,7 @@ impl NotesPage {
                             .a11y_button(kind.confirm())
                             .cursor_pointer()
                             .rounded(px(6.))
-                            .h(px(theme::scaled(shell::CONTROL_HEIGHT) - 8.))
+                            .h(px(theme::scaled(shell::CONTROL_HEIGHT)))
                             .px_3()
                             .flex()
                             .items_center()
@@ -4775,7 +4904,7 @@ impl NotesPage {
                             .a11y_button("Empty Trash")
                             .cursor_pointer()
                             .rounded(px(6.))
-                            .h(px(theme::scaled(shell::CONTROL_HEIGHT) - 8.))
+                            .h(px(theme::scaled(shell::CONTROL_HEIGHT)))
                             .px_3()
                             .flex()
                             .items_center()
@@ -4796,7 +4925,7 @@ impl NotesPage {
                             .a11y_button("Close Trash")
                             .cursor_pointer()
                             .rounded(px(6.))
-                            .h(px(theme::scaled(shell::CONTROL_HEIGHT) - 8.))
+                            .h(px(theme::scaled(shell::CONTROL_HEIGHT)))
                             .px_3()
                             .flex()
                             .items_center()
@@ -5173,7 +5302,7 @@ impl NotesPage {
                         .a11y_button("Close results")
                         .cursor_pointer()
                         .rounded(px(6.))
-                        .h(px(theme::scaled(shell::CONTROL_HEIGHT) - 8.))
+                        .h(px(theme::scaled(shell::CONTROL_HEIGHT)))
                         .px_3()
                         .flex()
                         .items_center()
@@ -5210,6 +5339,125 @@ impl NotesPage {
     }
 }
 impl NotesPage {
+    /// The running panel, hanging under the title bar's activity chip: every
+    /// live job — the store search, the backlinks scan, the About probe —
+    /// with what it walks. Closed by a press outside, Escape, or the last job
+    /// finishing.
+    fn render_running_panel(&mut self) -> Option<gpui::AnyElement> {
+        if !self.running_open {
+            return None;
+        }
+        let jobs = self.running_jobs();
+        if jobs.is_empty() {
+            // the last job finished while the panel was open: close instead of
+            // flashing an empty card
+            self.running_open = false;
+            return None;
+        }
+        let count = jobs.len();
+        let mut panel = div()
+            .id("running-panel")
+            .debug_selector(|| "running-panel".into())
+            .absolute()
+            .top(px(theme::scaled(shell::TITLE_BAR_HEIGHT)))
+            .right(px(12.))
+            .w(px(380.))
+            .occlude()
+            .rounded_lg()
+            .border_1()
+            .border_color(theme::hairline())
+            .bg(theme::popup())
+            .shadow_lg()
+            .p_2()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .max_h(px(320.))
+            .overflow_y_scroll()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(theme::font_body()))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme::text())
+                            .child("Running"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(theme::font_meta()))
+                            .text_color(theme::text_faint())
+                            .child(if count == 1 {
+                                "1 job".to_string()
+                            } else {
+                                format!("{count} jobs")
+                            }),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(px(theme::font_meta()))
+                    .text_color(theme::text_faint())
+                    .child("In the order they run."),
+            );
+        for (ix, job) in jobs.into_iter().enumerate() {
+            let key = job.key.clone();
+            panel = panel.child(
+                div()
+                    .id(("running-row", ix))
+                    .debug_selector(move || format!("running-row-{key}"))
+                    .role(gpui::Role::Status)
+                    .aria_label(job.title.clone())
+                    .flex()
+                    .items_start()
+                    .gap_2()
+                    .rounded(px(4.))
+                    .px_1()
+                    .py_1()
+                    .child(motion::spinner(
+                        SharedString::from(format!("running-row-spin-{ix}")),
+                        "icons/icon-spinner.svg",
+                        px(theme::icon_tiny()),
+                        theme::BEHIND,
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(1.))
+                            .child(
+                                div()
+                                    .text_size(px(theme::font_meta()))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(theme::text())
+                                    .whitespace_nowrap()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(job.title),
+                            )
+                            .when_some(job.detail, |col, detail| {
+                                col.child(
+                                    div()
+                                        .text_size(px(theme::font_meta()))
+                                        .text_color(theme::text_faint())
+                                        .whitespace_nowrap()
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .child(detail),
+                                )
+                            }),
+                    ),
+            );
+        }
+        Some(panel.into_any_element())
+    }
+
     /// The floating window paints its own title bar: the window is created
     /// with appears_transparent, so without this strip there is no title,
     /// drag region, or window controls. The shell's bar: the brand mark and
@@ -5521,6 +5769,48 @@ impl NotesPage {
                             cx.listener(|this, _, _, cx| this.toggle_list(cx)),
                         ))
                     })
+                    // the running jobs, stated at the window level: spinner
+                    // and word while work runs, nothing at idle. The bar is
+                    // one drag region, so the chip occludes it and stops the
+                    // press like the window buttons beside it.
+                    .when_some(self.activity(), |row, label| {
+                        row.child(
+                            div()
+                                .id("activity-chip")
+                                .debug_selector(|| "activity-chip".into())
+                                .a11y_button(format!("{label} — show every running job"))
+                                .cursor_pointer()
+                                .occlude()
+                                .flex_shrink_0()
+                                .h(px(28.))
+                                .px_2p5()
+                                .rounded_full()
+                                .bg(theme::panel())
+                                .flex()
+                                .items_center()
+                                .gap(px(7.))
+                                .text_size(px(theme::font_meta()))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(theme::BEHIND)
+                                .whitespace_nowrap()
+                                .hover(|s| s.bg(theme::raised()))
+                                .when(SHOW_TOOLTIPS, |chip| {
+                                    chip.tooltip(crate::ui::tooltip_text("Show every running job"))
+                                })
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.running_open = !this.running_open;
+                                    cx.notify();
+                                }))
+                                .child(motion::spinner(
+                                    "activity-spinner",
+                                    "icons/icon-spinner.svg",
+                                    px(theme::icon_tiny()),
+                                    theme::BEHIND,
+                                ))
+                                .child(label),
+                        )
+                    })
                     .child(div().w(px(1.)).h(px(20.)).mx_1().bg(theme::hairline()))
                     .child(crate::ui::window_button(
                         "notes-minimize",
@@ -5652,7 +5942,7 @@ impl NotesPage {
                 .debug_selector(move || id.into())
                 .a11y_button(label)
                 .cursor_pointer()
-                .h(px(theme::scaled(shell::CONTROL_HEIGHT) - 8.))
+                .h(px(theme::scaled(shell::CONTROL_HEIGHT)))
                 .px_3()
                 .rounded(px(6.))
                 .flex_shrink_0()
@@ -5820,7 +6110,7 @@ impl NotesPage {
                                         .a11y_button("Create note")
                                         .cursor_pointer()
                                         .rounded(px(6.))
-                                        .h(px(theme::scaled(shell::CONTROL_HEIGHT) - 8.))
+                                        .h(px(theme::scaled(shell::CONTROL_HEIGHT)))
                                         .px_3()
                                         .flex()
                                         .items_center()
@@ -5840,7 +6130,7 @@ impl NotesPage {
                                         .a11y_button("Cancel new note")
                                         .cursor_pointer()
                                         .rounded(px(6.))
-                                        .h(px(theme::scaled(shell::CONTROL_HEIGHT) - 8.))
+                                        .h(px(theme::scaled(shell::CONTROL_HEIGHT)))
                                         .px_2p5()
                                         .flex()
                                         .items_center()
@@ -6297,6 +6587,36 @@ impl NotesPage {
         cx.notify();
     }
 
+    /// One page of the tree: the rows the viewport currently shows, from the
+    /// heights the last layout measured. Falls back to ten rows before the
+    /// first layout sizes the list.
+    fn tree_page_rows(&self) -> usize {
+        let state = self.tree_scroll.0.borrow();
+        let max_offset = state.base_handle.max_offset().y;
+        if let Some(size) = state.last_item_size {
+            let viewport = (size.contents.height - max_offset).max(px(0.));
+            if size.item.height > px(0.) {
+                let rows = (viewport / size.item.height) as usize;
+                if rows > 0 {
+                    return rows;
+                }
+            }
+        }
+        10
+    }
+
+    fn page_tree_cursor(&mut self, down: bool, cx: &mut Context<Self>) {
+        let rows = self.tree_page_rows();
+        self.move_tree_cursor(
+            if down {
+                rows as isize
+            } else {
+                -(rows as isize)
+            },
+            cx,
+        );
+    }
+
     fn collapse_or_parent(&mut self, cx: &mut Context<Self>) {
         let Some(path) = self.tree_cursor.clone() else {
             return;
@@ -6391,6 +6711,8 @@ impl NotesPage {
         match key {
             "down" => self.move_tree_cursor(1, cx),
             "up" => self.move_tree_cursor(-1, cx),
+            "pageup" => self.page_tree_cursor(false, cx),
+            "pagedown" => self.page_tree_cursor(true, cx),
             "home" => self.jump_tree_cursor(false, cx),
             "end" => self.jump_tree_cursor(true, cx),
             "left" => self.collapse_or_parent(cx),

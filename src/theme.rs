@@ -6,7 +6,9 @@
 pub use warpui_kit_core::fonts::*;
 // the fixed semantic colors stay constants (they never follow the palette),
 // and the accent preset system rides along
-pub use warpui_kit_core::palette::{AccentColors, CHANGES, DANGER, SCRIM, current_ramp, tint};
+pub use warpui_kit_core::palette::{
+    AccentColors, BEHIND, CHANGES, DANGER, SCRIM, current_ramp, tint,
+};
 // the module itself names `palette::…` when it maps the kit theme
 use warpui_kit_core::palette;
 pub use warpui_kit_core::shell::scaled;

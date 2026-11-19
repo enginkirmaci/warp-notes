@@ -248,7 +248,7 @@ impl NotesPage {
                 .a11y_button("Open Trash")
                 .cursor_pointer()
                 .rounded(px(6.))
-                .h(px(theme::scaled(shell::CONTROL_HEIGHT) - 8.))
+                .h(px(theme::scaled(shell::CONTROL_HEIGHT)))
                 .px_3()
                 .flex()
                 .items_center()
