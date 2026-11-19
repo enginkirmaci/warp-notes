@@ -22,7 +22,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use warpui_kit_core::{motion, pane_nav, shell};
+use warpui_kit_core::{about, motion, pane_nav, shell};
 use warpui_kit_markdown::live::{InlineObjectKind, LiveLineKind};
 use warpui_kit_markdown::{
     LiveEditor, LiveEditorEvent, LiveEditorState, apply, note_key, parse_document,
@@ -609,9 +609,9 @@ impl NotesPage {
             store_path_pending: None,
             notes_scope,
             section,
-            about_selected: warpui_kit_core::about::AppId::Notes,
+            about_selected: about::AppId::Notes,
             about_members: vec![warpui_kit_core::about::current_member(
-                warpui_kit_core::about::AppId::Notes,
+                about::AppId::Notes,
                 &warpui_kit_core::build_info!(),
             )],
             about_scanning: false,
@@ -5261,21 +5261,11 @@ impl NotesPage {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .size(px(28.))
-                            .rounded(px(6.))
-                            .bg(theme::accent_soft())
-                            .child(icon(
-                                "icons/logo.svg",
-                                px(theme::icon_small()),
-                                theme::accent_ink(),
-                            )),
-                    )
+                    .child(about::brand_tile(
+                        about::AppId::Notes,
+                        28.,
+                        theme::icon_small(),
+                    ))
                     .child(
                         div()
                             .flex_shrink_0()
@@ -5291,7 +5281,7 @@ impl NotesPage {
                         shell::app_links().child(
                             shell::app_link(
                                 "notes-launch-station",
-                                "icons/logo-station.svg",
+                                about::AppId::Station,
                                 "Open Warp Station",
                             )
                             .on_click(|_, _, _| {
