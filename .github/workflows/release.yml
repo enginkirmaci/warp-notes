@@ -47,6 +47,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Stamp the build facts (commit, channel, released)
+        run: >
+          python3 scripts/version.py show --json
+          | python3 -c 'import json,sys; f=json.load(sys.stdin); [print(f"WARP_SUITE_{k.upper()}={f[k]}") for k in ("commit", "channel", "released")]'
+          >> "$GITHUB_ENV"
+
       - name: cargo build --release
         run: cargo build --release --locked
 
@@ -98,6 +104,13 @@ jobs:
           toolchain: ${{ steps.toolchain.outputs.channel }}
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Stamp the build facts (commit, channel, released)
+        shell: bash
+        run: >
+          python scripts/version.py show --json
+          | python -c 'import json,sys; f=json.load(sys.stdin); [print(f"WARP_SUITE_{k.upper()}={f[k]}") for k in ("commit", "channel", "released")]'
+          >> "$GITHUB_ENV"
 
       - name: cargo build --release
         run: cargo build --release --locked
