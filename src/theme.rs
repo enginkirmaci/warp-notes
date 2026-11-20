@@ -39,6 +39,22 @@ pub const PALETTE_WIDTH: f32 = 580.;
 /// The right-hand Outline/Backlinks panel.
 pub const CONTEXT_WIDTH: f32 = 260.;
 
+// ---- the notes tree --------------------------------------------------------
+
+/// A tree row's inset before its first glyph.
+pub const TREE_INSET: f32 = 10.;
+
+/// The gap between a tree row's glyphs.
+pub const TREE_ICON_GAP: f32 = 6.;
+
+/// One tree level's indent: the leading icon slot plus its gap, so a child
+/// row's first glyph starts exactly under its parent folder's icon. The icon
+/// follows the live text size, so the step does too — a fixed 14 px step slid
+/// the child rows left as the text grew.
+pub fn tree_indent() -> f32 {
+    warpui_kit_core::fonts::icon_tiny() + TREE_ICON_GAP
+}
+
 // ---- gpui-kit theme mapping ------------------------------------------------
 
 /// Map the family palette onto gpui-kit's shadcn-style theme tokens. Call

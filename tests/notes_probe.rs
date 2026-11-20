@@ -207,8 +207,16 @@ fn open_page(
     cx: &mut TestAppContext,
     launch: Launch,
 ) -> (gpui::WindowHandle<NotesPage>, gpui::Entity<NotesPage>) {
+    open_page_sized(cx, launch, size(px(1000.), px(700.)))
+}
+
+fn open_page_sized(
+    cx: &mut TestAppContext,
+    launch: Launch,
+    window_size: gpui::Size<Pixels>,
+) -> (gpui::WindowHandle<NotesPage>, gpui::Entity<NotesPage>) {
     let mut page: Option<gpui::Entity<NotesPage>> = None;
-    let handle = cx.open_window(size(px(1000.), px(700.)), |window, cx| {
+    let handle = cx.open_window(window_size, |window, cx| {
         page = Some(cx.entity());
         NotesPage::new(launch, window, cx)
     });
@@ -3352,6 +3360,54 @@ fn tree_rows_fill_the_pane(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn tree_children_start_under_their_parents_icon(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-tree-indent");
+    seed_notes(&home);
+    let (handle, _page) = open_page(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: None,
+            open_note: None,
+            whole_store: true,
+        },
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    // projects -> alpha -> note.md: three levels of one store
+    click_str(cx, "note-item-projects");
+    click_str(cx, "note-item-alpha");
+
+    let projects = bounds(cx, "note-name-projects").expect("the projects folder name");
+    let alpha = bounds(cx, "note-name-alpha").expect("the alpha folder name");
+    let note = bounds(cx, "note-name-note.md").expect("the note's name");
+
+    // one level steps in by the leading icon slot and its gap, at the live
+    // text size where the icons grew with it
+    let step = alpha.origin.x - projects.origin.x;
+    let expected = px(theme::icon_tiny() + theme::TREE_ICON_GAP);
+    assert!(
+        (step - expected).abs() <= px(0.5),
+        "a level indents by the icon slot plus its gap: {step} vs {expected}"
+    );
+    // a note's name sits in its folder's name column, so its icon — one slot
+    // left of the name — starts exactly under the folder's icon
+    assert!(
+        (note.origin.x - alpha.origin.x).abs() <= px(0.5),
+        "the note name lines up with the folder it lives in: {} vs {}",
+        note.origin.x,
+        alpha.origin.x
+    );
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
 fn folder_bands_carry_their_note_count(cx: &mut TestAppContext) {
     let _guard = hold_home();
     cx.update(gpui_kit::init);
@@ -3670,6 +3726,57 @@ fn the_row_menu_draws_each_shortcut_as_a_keycap(cx: &mut TestAppContext) {
         assert!(
             bounds(cx, key).is_none(),
             "{key} is absent in the pinned scope"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[gpui::test]
+fn a_row_menu_opened_low_stays_inside_a_short_window(cx: &mut TestAppContext) {
+    let _guard = hold_home();
+    cx.update(gpui_kit::init);
+    cx.update(theme::apply_kit_theme);
+    let home = temp_home("warpnotes-probe-menu-fit");
+    // shorter than the row menu: a menu opened at the first row cannot hang
+    // below it and must be pulled back inside
+    let window_h = px(520.);
+    let (handle, _page) = open_page_sized(
+        cx,
+        Launch {
+            store_root: Some(home.join("notes")),
+            repo_scope: Some("alpha".into()),
+            open_note: None,
+            whole_store: false,
+        },
+        size(px(1000.), window_h),
+    );
+    let cx = VisualTestContext::from_window(handle.into(), cx).into_mut();
+    cx.run_until_parked();
+    cx.update(|window, cx| drop(window.draw(cx)));
+
+    let row = bounds(cx, "note-item-note.md").expect("the note row");
+    right_click(cx, "note-item-note.md");
+    let menu = bounds(cx, "notes-row-menu").expect("the row menu opens");
+    let fits = menu.size.height <= window_h - px(16.);
+    assert!(menu.origin.y >= px(8.), "the menu's top stays inside");
+    if fits {
+        assert!(
+            menu.origin.y + menu.size.height <= window_h - px(8.) + px(1.),
+            "the menu's bottom stops inside the window: {} vs {window_h}",
+            menu.origin.y + menu.size.height
+        );
+        assert!(
+            menu.origin.y < row.origin.y,
+            "a menu that would hang below opens pulled up, not clipped"
+        );
+    } else {
+        // a text size that makes the menu taller than the window pins it to
+        // the top margin; there is no room to show it whole
+        assert!(
+            (menu.origin.y - px(8.)).abs() <= px(1.),
+            "an oversized menu pins to the top margin: {}",
+            menu.origin.y
         );
     }
 

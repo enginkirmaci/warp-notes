@@ -15,7 +15,7 @@ use gpui::prelude::*;
 use gpui::{
     App, Context, Entity, Focusable as _, FontWeight, MouseButton, Pixels, ScrollEvent,
     ScrollHandle, ScrollStrategy, SharedString, UniformListScrollHandle, WeakEntity, Window,
-    WindowControlArea, canvas, div, px, uniform_list,
+    WindowControlArea, anchored, canvas, div, point, px, uniform_list,
 };
 use gpui_kit::component::input::{InputEvent, InputState};
 use std::cell::Cell;
@@ -3550,12 +3550,12 @@ impl Render for NotesPage {
             root = root.child(toasts);
         }
         if let Some(menu) = self.row_menu.clone() {
-            root = root.child(self.render_row_menu(window, cx, menu));
+            root = root.child(self.render_row_menu(cx, menu));
         }
         if let Some(menu) = self.tab_menu
             && menu.index < self.open_tabs.len()
         {
-            root = root.child(self.render_tab_menu(window, cx, menu));
+            root = root.child(self.render_tab_menu(cx, menu));
         }
         if let Some(prompt) = self.prompt.clone() {
             root = root.child(self.render_prompt(window, cx, prompt));
@@ -4372,16 +4372,10 @@ impl NotesPage {
         )
     }
 
-    fn render_row_menu(
-        &mut self,
-        window: &Window,
-        cx: &mut Context<Self>,
-        menu: RowMenu,
-    ) -> gpui::AnyElement {
-        let max_x = (window.viewport_size().width.as_f32() - theme::MENU_WIDTH - 8.).max(8.);
-        let max_y = (window.viewport_size().height.as_f32() - 320.).max(8.);
-        let x = menu.x.clamp(8., max_x);
-        let y = menu.y.clamp(8., max_y);
+    fn render_row_menu(&mut self, cx: &mut Context<Self>, menu: RowMenu) -> gpui::AnyElement {
+        // anchored measures the card and snaps it inside the window, so a
+        // menu opened near the bottom edge moves up instead of running past it
+        let at = point(px(menu.x), px(menu.y));
         let path = menu.path.clone();
         let is_folder = menu.is_folder;
         let pinned = self.is_pinned(&path);
@@ -4392,9 +4386,6 @@ impl NotesPage {
         let card = warpui_kit_core::controls::popover_card()
             .id("notes-row-menu")
             .debug_selector(|| "notes-row-menu".into())
-            .absolute()
-            .left(px(x))
-            .top(px(y))
             .w(px(theme::MENU_WIDTH))
             .occlude()
             .flex()
@@ -4555,29 +4546,26 @@ impl NotesPage {
                     cx.notify();
                 }),
             )
-            .child(card)
+            .child(
+                anchored()
+                    .anchor(gpui::Anchor::TopLeft)
+                    .position(at)
+                    .snap_to_window_with_margin(px(8.))
+                    .child(card),
+            )
             .into_any_element()
     }
 
     /// The tab strip's right-click menu: same popover card and scrim as the
     /// tree row menu, anchored where the pointer opened it.
-    fn render_tab_menu(
-        &self,
-        window: &Window,
-        cx: &mut Context<Self>,
-        menu: TabMenu,
-    ) -> gpui::AnyElement {
-        let max_x = (window.viewport_size().width.as_f32() - theme::MENU_WIDTH - 8.).max(8.);
-        let max_y = (window.viewport_size().height.as_f32() - 160.).max(8.);
-        let x = menu.x.clamp(8., max_x);
-        let y = menu.y.clamp(8., max_y);
+    fn render_tab_menu(&self, cx: &mut Context<Self>, menu: TabMenu) -> gpui::AnyElement {
+        // anchored measures the card and snaps it inside the window, so a tab
+        // menu never runs off an edge of a narrow window
+        let at = point(px(menu.x), px(menu.y));
         let index = menu.index;
         let card = warpui_kit_core::controls::popover_card()
             .id("notes-tab-menu")
             .debug_selector(|| "notes-tab-menu".into())
-            .absolute()
-            .left(px(x))
-            .top(px(y))
             .w(px(theme::MENU_WIDTH))
             .occlude()
             .flex()
@@ -4630,7 +4618,13 @@ impl NotesPage {
                     cx.notify();
                 }),
             )
-            .child(card)
+            .child(
+                anchored()
+                    .anchor(gpui::Anchor::TopLeft)
+                    .position(at)
+                    .snap_to_window_with_margin(px(8.))
+                    .child(card),
+            )
             .into_any_element()
     }
 
@@ -6733,9 +6727,16 @@ impl NotesPage {
         cx.stop_propagation();
     }
 
-    /// One row of the file tree: 34 px, the selected one lifted with the
-    /// accent down its left edge, and a `changes` dot on notes with unsaved
-    /// text.
+    /// A row's left inset: one leading icon slot per tree level, so a child
+    /// starts exactly under its parent folder's icon instead of a few pixels
+    /// left of it.
+    fn tree_row_inset(depth: usize) -> gpui::Pixels {
+        px(theme::TREE_INSET + depth as f32 * theme::tree_indent())
+    }
+
+    /// One row of the file tree: 44 px at the base text size, the selected one
+    /// lifted with the accent down its left edge, and a `changes` dot on notes
+    /// with unsaved text.
     fn render_tree_row(
         &mut self,
         item: &notes_core::NotesTreeItem,
@@ -6767,6 +6768,7 @@ impl NotesPage {
             index as u64,
         );
         let selector_name = item.name.clone();
+        let name_selector = format!("note-name-{}", item.name);
         let actions = self.row_actions(item, index, cx);
         div()
             .id(id)
@@ -6775,10 +6777,10 @@ impl NotesPage {
             .cursor_pointer()
             .flex()
             .items_center()
-            .gap_1p5()
+            .gap(px(theme::TREE_ICON_GAP))
             .w_full()
             .h(px(theme::scaled(TREE_ROW_HEIGHT)))
-            .pl(px(10. + depth as f32 * 14.))
+            .pl(Self::tree_row_inset(depth))
             .pr_3()
             .when(cursor && self.tree_focused, |d| d.bg(theme::raised()))
             .hover(|s| s.bg(theme::panel()))
@@ -6820,6 +6822,7 @@ impl NotesPage {
             ))
             .child(
                 div()
+                    .debug_selector(move || name_selector.clone())
                     .flex_1()
                     .min_w_0()
                     .truncate()
@@ -6860,6 +6863,7 @@ impl NotesPage {
             index as u64,
         );
         let selector_name = item.name.clone();
+        let name_selector = format!("note-name-{}", item.name);
         let pin_selector = format!("note-pin-{}", item.name);
         let pin_path = item.full_path.clone();
         let actions = self.row_actions(item, index, cx);
@@ -6871,10 +6875,10 @@ impl NotesPage {
             .cursor_pointer()
             .flex()
             .items_center()
-            .gap_1p5()
+            .gap(px(theme::TREE_ICON_GAP))
             .w_full()
             .h(px(theme::scaled(TREE_ROW_HEIGHT)))
-            .pl(px(10. + depth as f32 * 14.))
+            .pl(Self::tree_row_inset(depth))
             .pr_3()
             .when(selected, |d| {
                 d.bg(theme::raised()).child(
@@ -6941,6 +6945,7 @@ impl NotesPage {
             ))
             .child(
                 div()
+                    .debug_selector(move || name_selector.clone())
                     .flex_1()
                     .min_w_0()
                     .truncate()
