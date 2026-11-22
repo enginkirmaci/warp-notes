@@ -1,70 +1,60 @@
 # warp-notes
 
-Per-repo markdown notes with an Obsidian-style live editor — the Notes app
-of the [warp](https://github.com/enginkirmaci/warp-suite) family, extracted
-from DevTools into its own repo. Rust/GPUI (gpui-kit 0.9), one crate.
+Per-repo markdown notes with an Obsidian-style live editor: one notes store on
+disk, a folder per repository, and a single editor that renders markdown in
+place while you type.
+
+Part of the [warp suite](https://github.com/enginkirmaci/warp-suite). Rust and
+GPUI.
+
+## Install
+
+The normal way is the suite bundle, which installs every warp app at once:
+
+- **Linux** — download `warp-suite-<version>-linux.tar.gz` from the
+  [suite release](https://github.com/enginkirmaci/warp-suite/releases), extract
+  it, and run `./install.sh`. Binaries go to `~/.local/bin`, desktop entries
+  and icons to `~/.local/share`; everything is per-user, no root needed.
+- **Windows** — download `warp-suite-<version>-windows-x64.zip`, extract it,
+  and run `install.cmd`. It installs under
+  `%LOCALAPPDATA%\Programs\warp-suite` with a Start Menu folder. The same ZIP
+  is portable: run the executables under `apps\` without installing.
+
+warp-notes also ships on its own: the Linux tarball and the Windows portable
+zip and installer are on
+[this repository's releases](https://github.com/enginkirmaci/warp-notes/releases).
+
+## Run
+
+```sh
+cargo run            # debug build
+cargo test           # unit tests and headless UI probes
+```
+
+The first build fetches GPUI from the zed git repository and takes a while. It
+needs the usual Wayland/Vulkan development packages.
 
 ## What it does
 
-- One notes store on disk: `~/notes`, one repository per folder under
-  `projects/`. A standalone window can point it anywhere from Settings
-  (a `--store` launch, including Warp Station's, wins); an older store kept in
-  `~/.warp/notes` (or the even older `~/.devtools/notes`) moves there on first
-  run.
-- The family shell, Warp Station's stack: a rail (Notes, Settings), the strip
-  under the titlebar (a Notes tab for the list, then one per open note), the
-  tree in the list pane and one live editor in the detail pane. Settings holds
-  the store path (editable when the window was not launched with `--store`),
-  the shared text size, the live palette and reduce motion (the list width and
-  the motion choice persist in the versioned snake_case
-  `~/.warp/notes/settings.json`).
-- The list head reads the store: "N notes · M pinned" with the new-note and
-  collapse controls, then an `All` / `Pinned` scope. The tree's folders are
-  bands with their note counts; note rows carry the name at name size, the
-  edited age, the pin and the row menu.
-- The note head is the note's identity: the pin, the title at screen-title
-  size, the store-relative path with the edit age, and a `…` menu for rename,
-  move, duplicate, copy path and Trash. The text keeps its 760px measure under
-  a full-width head.
-- Folder/file tree, capped full-text search, dirty-buffer-safe navigation.
-  A row's action menu (also on right-click) renames, moves, duplicates,
-  creates folders and copies store-relative paths; the tree and the open note
-  follow changes made outside the window on refresh or activation.
-- Moving a note or folder to Trash is one action with an Undo toast; Settings
-  → General opens the Trash dialog to restore or empty it. Entries stay for
-  30 days, and there is no permanent delete outside Empty Trash.
-- Keyboard-first tree: `Ctrl+Shift+E` focuses it, arrows move/collapse/expand,
-  Enter opens, `F2` renames, `Delete` trashes and `Ctrl+D` duplicates. The
-  title-bar search selects hits with Up/Down/Enter, and `Ctrl+/` opens the
-  shortcut sheet.
-- `Ctrl+P` quick open searches every note in the store by title and path;
-  pinned and recent notes come first. The row menu and the note head's star
-  pin/unpin, and the head's `Pinned` scope lists them flat. Opening a note
-  from another repo drops the current repo pin so the tree can show it.
-- The title-bar search is store-wide by default; its popup scope chip narrows
-  to the pinned repo. `Ctrl+Shift+F` (or "See all results") opens the full
-  result list with highlighted excerpts.
-- Open notes appear in the strip under the titlebar. A single click in the
-  list opens a preview tab — its name is italic and the next single click
-  takes the tab over — while a double click in the list or on the tab keeps
-  it, and a middle click opens the note in a tab of its own. `Ctrl+Enter` in
-  quick open or the row menu's "Open in new tab" adds one, `Ctrl+W` closes,
-  `Ctrl+Tab` cycles, and `Alt+Left`/`Right` (or the titlebar arrows) walk the
-  open history.
-- The right-hand context panel toggles with `Ctrl+Shift+B`: Outline lists the
-  current headings and jumps the caret, Backlinks lists the notes that link
-  here and opens their source.
-- A single live editor that works like Obsidian's live preview: markdown
-  renders in place while typing with its syntax hidden until the caret touches
-  it, checkboxes toggle on click, Enter continues lists, links and
-  `[[wikilinks]]` open on click, Ctrl+F finds; frontmatter is a Properties
-  panel, tables grow from their add strips
-  and images sit inside sentences; colors come from the app's accent preset.
-  The engine and the toolbar's pure markdown ops are shared with the family
-  via [warpui-kit-markdown](../warpui-kit-markdown).
-- Clipboard image paste becomes `assets/paste-<stamp>.<ext>` next to the
-  note plus a relative markdown ref. Moving a note leaves those relative
-  assets in the old folder; move the assets with it when that matters.
+- **One notes store on disk**: `~/notes`, one repository per folder under
+  `projects/`. A standalone window can point it anywhere from Settings; a
+  `--store` launch, including Warp Station's, wins.
+- **A live editor** that works like Obsidian's live preview: markdown renders
+  in place with its syntax hidden until the caret touches it, checkboxes
+  toggle on click, Enter continues lists, links and `[[wikilinks]]` open on
+  click, and `Ctrl+F` finds. Frontmatter is a Properties panel, tables grow
+  from their add strips, and images sit inside sentences.
+- **A folder and file tree** with capped full-text search and dirty-buffer-safe
+  navigation. A row's action menu renames, moves, duplicates, creates folders
+  and copies store-relative paths.
+- **Trash with Undo**: moving a note or folder to Trash is one action with an
+  Undo toast. Entries stay for 30 days, and there is no permanent delete
+  outside Empty Trash.
+- **Keyboard-first**: `Ctrl+Shift+E` focuses the tree, `Ctrl+P` quick-opens any
+  note, `Ctrl+Shift+F` opens the full search results, `Ctrl+Shift+B` toggles
+  the outline and backlinks panel, and `Ctrl+/` opens the shortcut sheet.
+- **Tabs** under the titlebar: a single click previews, a double click keeps,
+  and a middle click opens a note in a tab of its own.
 
 ## Launch contract
 
@@ -72,31 +62,47 @@ from DevTools into its own repo. Rust/GPUI (gpui-kit 0.9), one crate.
 warp-notes [--store <path>] [--repo <name>] [--root] [--note <path>]
 ```
 
-- `--store` — the notes store root; default `~/notes` or the path saved in
-  Settings. Warp Station passes its resolved `notes_store_path` setting and
-  wins over the local field.
-- `--repo` — pin the tree to one repository's folder under `projects/` (the
-  titlebar's up button climbs back to the whole store).
-- `--root` — open the whole store outright, beating a `--repo` pin and the
-  scope the last window remembered. Warp Station's titlebar sends it, so the
-  notes root opens whatever repository is selected there.
-- `--note` — open that note right away (absolute, or store-relative).
+| Flag | What it does |
+| --- | --- |
+| `--store` | the notes store root; defaults to `~/notes` or the path saved in Settings. Warp Station passes its resolved `notes_store_path` and wins over the local field. |
+| `--repo` | pins the tree to one repository's folder under `projects/` |
+| `--root` | opens the whole store outright, beating a `--repo` pin |
+| `--note` | opens that note right away (absolute, or store-relative) |
 
 Multi-instance is free: every launch opens its own window.
 
-## Build
+## Where it keeps its files
+
+| Path | What |
+| --- | --- |
+| `~/notes` | the notes store — your content |
+| `~/.warp/notes/settings.json` | the versioned settings |
+| `~/.warp/logs/` | the suite's shared rolling logs |
+
+An older store kept in `~/.warp/notes` (or the even older `~/.devtools/notes`)
+moves to `~/notes` on first run.
+
+## Siblings
+
+| App | What it adds |
+| --- | --- |
+| [warp-station](https://github.com/enginkirmaci/warp-station) | the workbench that launches this app with `--store`/`--repo`/`--root`/`--note` |
+| [warp-agent](https://github.com/enginkirmaci/warp-agent) | the chat client |
+| [warp-pomodoro](https://github.com/enginkirmaci/warp-pomodoro) | the focus timer |
+| [warp-flow](https://github.com/enginkirmaci/warp-flow) | the workflow engine |
+| [warp-snapit](https://github.com/enginkirmaci/warp-snapit) | the Windows zone snapper |
+
+## Build and package
 
 ```sh
 cargo build --release
 ```
 
-Packaging lives in this repository's `release` workflow: the tag job builds
-the Linux bundle (binary, desktop entry, icons) and the Windows zip and
-installer from the assets under `packaging/`.
+The `release` workflow packages this repository alone: on Linux it stages the
+binary, the desktop entry and the hicolor icons into a tarball; on Windows it
+writes the portable zip and the Inno Setup installer. The assets stay here
+under `packaging/`.
 
-## Sibling deps
+## License
 
-`warpui-kit-core` (palette/fonts/icons/a11y), `warpui-kit-markdown` (the live
-editor + toolbar ops) and `warpui-kit-diff` (code-block highlighting, through
-the markdown crate) resolve as path deps next to this repo — clone them into
-the same parent directory.
+GPL-3.0. See [LICENSE](LICENSE).

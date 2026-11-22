@@ -4,7 +4,7 @@ Read [`../../AGENTS.md`](../../AGENTS.md) first. This file adds only the
 app-specific facts. The user-facing description is in
 [`README.md`](README.md).
 
-Design plans live in `plans/`: a plan is deleted when its work lands, and the
+Design plans live in `docs/plans/`: a plan is deleted when its work lands, and the
 rules that still matter move into `README.md` or this file.
 
 ## Shape
