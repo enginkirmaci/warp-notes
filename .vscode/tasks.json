@@ -1,0 +1,27 @@
+{
+    // The build task each launch config names in preLaunchTask. `cargo build`
+    // with no -p: this checkout is the app's own implicit workspace, so the
+    // package selector the suite needs would be redundant here. The build lands
+    // in `target/`, a symlink to the suite's shared cache.
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "cargo build (warp-notes)",
+            "type": "shell",
+            "command": "cargo",
+            "args": ["build"],
+            "options": { "cwd": "${workspaceFolder}" },
+            "group": "build",
+            "problemMatcher": "$rustc"
+        },
+        {
+            "label": "cargo test (warp-notes)",
+            "type": "shell",
+            "command": "cargo",
+            "args": ["test"],
+            "options": { "cwd": "${workspaceFolder}" },
+            "group": "test",
+            "problemMatcher": "$rustc"
+        }
+    ]
+}

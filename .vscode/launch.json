@@ -1,0 +1,44 @@
+{
+    // Open this app's checkout and press F5. The build task runs `cargo build`
+    // here (the app root is its own implicit workspace, so no -p is needed) and
+    // the binary is read from `target/debug/`, which is a symlink to the suite's
+    // shared build cache — the same tree `warp-suite/apps/warp-notes` builds into.
+    //
+    // The warpui-kit crates come from the sibling warp-suite/kits/ checkout:
+    // .cargo/config.toml (gitignored, machine-local) overrides them with
+    // cargo's `paths`, so this build uses the same kit sources as a build
+    // through warp-suite/apps/ and shares its compiled kit artifacts. Kit
+    // breakpoints resolve to kits/. Cargo.toml and Cargo.lock keep the pinned
+    // tag, so CI's --locked build is unaffected; delete that file to build
+    // against the tag again.
+    //
+    // Two configs because "type" cannot be platform-specific in launch.json:
+    // Linux uses webfreak.debug's gdb adapter (CodeLLDB wedges at the NVIDIA
+    // Vulkan ICD dlopen under its solib handler), Windows uses the C/C++
+    // extension's cppvsdbg. F5 reuses the last-selected config per machine, so
+    // each machine only ever sees its own entry after the first pick.
+    //
+    // gdb uses non-standard field names: "target" (not "program") and a string
+    // "arguments" (not "args") — a missing "target" crashes the adapter with
+    // ERR_INVALID_ARG_TYPE.
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Rust: warp-notes (Linux — gdb)",
+            "type": "gdb",
+            "request": "launch",
+            "target": "${workspaceFolder}/target/debug/warp-notes",
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "cargo build (warp-notes)"
+        },
+        {
+            "name": "Rust: warp-notes (Windows — cppvsdbg)",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/target/debug/warp-notes.exe",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "preLaunchTask": "cargo build (warp-notes)"
+        }
+    ]
+}
