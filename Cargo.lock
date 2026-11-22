@@ -7832,7 +7832,7 @@ dependencies = [
 
 [[package]]
 name = "warp-notes"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "anyhow",
  "chrono",
@@ -7853,16 +7853,16 @@ dependencies = [
 
 [[package]]
 name = "warpui-kit-build"
-version = "0.2.76"
-source = "git+https://github.com/enginkirmaci/warp-suite?tag=kits-v0.2.76#870e30f029aee7aaaedd68b078b29e80d2aa916d"
+version = "0.2.135"
+source = "git+https://github.com/enginkirmaci/warp-suite?tag=kits-v0.2.135#d48fdaa5b6c266f5d251106e7c4e2a0b8580a661"
 dependencies = [
  "winresource",
 ]
 
 [[package]]
 name = "warpui-kit-core"
-version = "0.2.76"
-source = "git+https://github.com/enginkirmaci/warp-suite?tag=kits-v0.2.76#870e30f029aee7aaaedd68b078b29e80d2aa916d"
+version = "0.2.135"
+source = "git+https://github.com/enginkirmaci/warp-suite?tag=kits-v0.2.135#d48fdaa5b6c266f5d251106e7c4e2a0b8580a661"
 dependencies = [
  "async-channel",
  "futures-util",
@@ -7877,20 +7877,21 @@ dependencies = [
 
 [[package]]
 name = "warpui-kit-diff"
-version = "0.2.76"
-source = "git+https://github.com/enginkirmaci/warp-suite?tag=kits-v0.2.76#870e30f029aee7aaaedd68b078b29e80d2aa916d"
+version = "0.2.135"
+source = "git+https://github.com/enginkirmaci/warp-suite?tag=kits-v0.2.135#d48fdaa5b6c266f5d251106e7c4e2a0b8580a661"
 dependencies = [
  "gpui-kit",
  "gpui-pre",
  "serde_json",
  "similar",
+ "unicode-width",
  "warpui-kit-core",
 ]
 
 [[package]]
 name = "warpui-kit-markdown"
-version = "0.2.76"
-source = "git+https://github.com/enginkirmaci/warp-suite?tag=kits-v0.2.76#870e30f029aee7aaaedd68b078b29e80d2aa916d"
+version = "0.2.135"
+source = "git+https://github.com/enginkirmaci/warp-suite?tag=kits-v0.2.135#d48fdaa5b6c266f5d251106e7c4e2a0b8580a661"
 dependencies = [
  "anyhow",
  "gpui-kit",
@@ -7904,8 +7905,8 @@ dependencies = [
 
 [[package]]
 name = "warpui-kit-platform"
-version = "0.2.76"
-source = "git+https://github.com/enginkirmaci/warp-suite?tag=kits-v0.2.76#870e30f029aee7aaaedd68b078b29e80d2aa916d"
+version = "0.2.135"
+source = "git+https://github.com/enginkirmaci/warp-suite?tag=kits-v0.2.135#d48fdaa5b6c266f5d251106e7c4e2a0b8580a661"
 dependencies = [
  "anyhow",
  "gpui-kit",
