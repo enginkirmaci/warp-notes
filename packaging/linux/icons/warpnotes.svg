@@ -17,7 +17,7 @@
   <g filter="url(#s)">
     <rect width="128" height="128" fill="url(#g)" mask="url(#notes-cut)"/>
   </g>
-  <g transform="translate(64 64) scale(1.8167) translate(-64 -64)" fill="#777A7D">
+  <g transform="translate(64 64) scale(1.8167) translate(-64 -64)" fill="#2878F0">
     <rect x="52.5" y="60" width="21" height="5" rx="2.5"/>
     <rect x="52.5" y="71" width="13" height="5" rx="2.5"/>
   </g>
