@@ -1,7 +1,7 @@
 # warp-notes — agent instructions
 
-Read [`../../AGENTS.md`](../../AGENTS.md) first. This file adds only the
-app-specific facts. The user-facing description is in
+Read [`../warp-suite/AGENTS.md`](../warp-suite/AGENTS.md) first. This file adds
+only the app-specific facts. The user-facing description is in
 [`README.md`](README.md).
 
 Design plans live in `docs/plans/`: a plan is deleted when its work lands, and the
