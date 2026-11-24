@@ -141,6 +141,12 @@ unaffected; delete the file to build against the tag again.
   ramp through `current_ramp().accent_colors()`; do not add a second accent
   picker.
 - Reduce motion is local to this app in `UiPrefs`, not in `ui.json`.
+- The About list fills its installed-family rows by spawning
+  `<binary> --version` per sibling, so the probe belongs to reaching About
+  (a rail press, or a launch that opens on About from prefs or
+  `WARP_NOTES_PAGE=about`) — never to a plain launch. Each probe is a real
+  process with a two-second deadline, and a sibling that boots a window
+  instead of answering would flash on every start.
 
 ## Do not
 

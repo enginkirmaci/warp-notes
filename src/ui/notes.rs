@@ -791,10 +791,16 @@ impl NotesPage {
             let _ = weak.update(cx, |page, cx| page.flush_saves(cx));
             true
         });
-        // the About list is seeded with this app above; the installed siblings
-        // are probed once here, off the UI thread, because each one is a
-        // `--version` spawn that can stall for seconds
-        page.refresh_about_members(cx);
+        // the About list is seeded with this app above. The installed siblings
+        // are only probed when About is actually reached — a launch that starts
+        // there (the remembered section, or the capture hook) probes now
+        // because no rail press will; every other launch waits for the switch
+        // into About. Each probe is a real `<binary> --version` process, and
+        // paying for it on every start is how a sibling's window used to flash
+        // for anyone who never opened the screen.
+        if page.section == Section::About {
+            page.refresh_about_members(cx);
+        }
         page
     }
 
@@ -3632,7 +3638,8 @@ impl NotesPage {
     /// spawns `<sibling> --version` for every installed app and waits on its
     /// process, so it must never run inside a frame. The seeded row stays on
     /// screen until the answer lands, and a scan already in flight owns the
-    /// members it will replace.
+    /// members it will replace. Entering About is the only caller, besides a
+    /// launch that opens on About: a screen nobody visits costs no processes.
     fn refresh_about_members(&mut self, cx: &mut Context<Self>) {
         use warpui_kit_core::about;
 
